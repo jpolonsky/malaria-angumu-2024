@@ -1,0 +1,9 @@
+data/*
+!data/maps/
+output/
+.DS_Store
+.Rhistory
+.RData
+.Rproj.user/
+Rplots.pdf
+data/maps/health_areas.rds
