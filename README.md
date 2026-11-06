@@ -57,4 +57,6 @@ Data used in this study are subject to restrictions arising from participant inf
 
 ## Citation
 
-If you use this code, please cite the manuscript (citation details will be updated on publication) and the code itself.
+If you use this code, please cite the manuscript (citation details will be updated on publication) and the code itself:
+
+Jonathan Polonsky. (2026). jpolonsky/malaria-angumu-2024 [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24021582
