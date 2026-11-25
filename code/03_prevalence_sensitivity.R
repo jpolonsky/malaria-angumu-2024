@@ -1,7 +1,8 @@
 # Sensitivity analyses of the malaria prevalence contrasts.
 # Reproduces S2 Table panels A (ratio of ORs versus survey 1, residual survey 1 ORs), B (Awasi-only comparator),
 # C (health-area random intercept), D (area-level permutation test), E (MDA+IRS versus IRS), F (E-values)
-# and G (net-adjusted ORs), and S12 Table (net use by zone). Needs output/models/prevalence_model.rds from 02_prevalence.R.
+# G (net-adjusted ORs) and H (Gengere as its own stratum), and S11 Table (net use by zone). Needs
+# output/models/prevalence_model.rds from 02_prevalence.R.
 
 pacman::p_load(lme4, emmeans, srvyr, survey, EValue, tidyverse)
 
@@ -516,7 +517,173 @@ s2_table_g <-
 print(s2_table_g |> select(analysis, survey_n, zone, or_primary_selected, or_ref, or_adjusted, ratio_n1_to_primary_selected, ratio_adjusted_to_ref), n = Inf, width = Inf)
 write_csv(s2_table_g, "output/tables/s2_table_g_net_adjusted_prevalence.csv")
 
-# S12 Table ----
+# S2 Table H ----
+
+# The MDA+IRS zone split into Gengere and the other four MDA+IRS areas (Apala, Lanyi, Ugudo-Zii, Uyandu),
+# otherwise the primary specification. The split was defined after Gengere's outcomes were seen, so it
+# is exploratory. The baseline covariate is constant within Gengere, so Gengere's adjusted OR borrows
+# its slope from the other 13 areas; the ratios of ORs versus survey 1 do not depend on that slope.
+zone_g_levels <- c("Routine", "IRS", "MDA_excl", "Gengere")
+zone_g_labels <- c(Routine = "Routine", IRS = "IRS", MDA_excl = "MDA+IRS excluding Gengere", Gengere = "Gengere", MDA = "MDA+IRS (primary model)")
+
+dat_g <-
+  dat_rdt |>
+  mutate(
+    zone_g = case_when(zone == "MDA" & area == "Gengere" ~ "Gengere", zone == "MDA" ~ "MDA_excl", .default = as.character(zone)) |>
+      factor(levels = zone_g_levels),
+    survey_n = as.integer(as.character(survey))
+  )
+stopifnot(
+  !anyNA(dat_g$zone_g),
+  setequal(unique(dat_g$area[dat_g$zone_g == "MDA_excl"]), c("Apala", "Lanyi", "Ugudo-Zii", "Uyandu")),
+  n_distinct(dat_g$baseline_prev_z[dat_g$zone_g == "Gengere"]) == 1
+)
+
+# Each model was fitted with bobyqa, Nelder_Mead and nlminbwrap from default starting values and the
+# non-singular fit with the highest log-likelihood kept: nlminbwrap for both, fixed here.
+h_control <- glmerControl(optimizer = "nlminbwrap", optCtrl = list(maxfun = 2e5))
+m_h_adj <- glmer(
+  outcome_rdt ~ zone_g * survey + age_years + sex + status + baseline_prev_z + (1 | cluster_uid/index_hh),
+  data = dat_g, family = binomial, control = h_control
+)
+m_h_unadj <- glmer(
+  outcome_rdt ~ zone_g * survey + age_years + sex + status + (1 | cluster_uid/index_hh),
+  data = dat_g, family = binomial, control = h_control
+)
+
+# Primary contrasts with the random-number state of Table 1 (the mvt intervals are simulated)
+set.seed(1)
+contrasts_prev_h <- tidy_contrasts(emm_prev) |> mutate(survey_n = as.integer(as.character(survey)))
+contrasts_prev_unadj <- tidy_contrasts(emm_prev_unadj) |> mutate(survey_n = as.integer(as.character(survey)))
+
+# Within each survey, IRS, MDA_excl and Gengere against Routine, mvt-adjusted over the three
+set.seed(20261118)
+h_within <- function(fit) {
+  emmeans(fit, ~ zone_g | survey, type = "response") |>
+    contrast(method = "trt.vs.ctrl", ref = "Routine", adjust = "mvt") |>
+    summary(infer = TRUE) |>
+    as_tibble() |>
+    transmute(
+      zone_g = str_remove(as.character(contrast), " / Routine"), survey_n = as.integer(as.character(survey)),
+      or = odds.ratio, lcl = asymp.LCL, ucl = asymp.UCL, p = p.value
+    )
+}
+h_ror <- function(fit, factor_name) {
+  contrast(emmeans(fit, as.formula(str_c("~ ", factor_name, " * survey"))), interaction = set_names(c("trt.vs.ctrl", "trt.vs.ctrl"), c(factor_name, "survey")), adjust = "none") |>
+    summary(infer = TRUE) |>
+    as_tibble() |>
+    transmute(
+      zone_g = str_remove(as.character(.data[[str_c(factor_name, "_trt.vs.ctrl")]]), " - Routine"),
+      survey_n = as.integer(str_extract(as.character(survey_trt.vs.ctrl), "^\\d")),
+      ror = exp(estimate), ror_lcl = exp(asymp.LCL), ror_ucl = exp(asymp.UCL)
+    )
+}
+ws_h_adj <- h_within(m_h_adj)
+ws_h_unadj <- h_within(m_h_unadj)
+ror_h <- h_ror(m_h_adj, "zone_g")
+
+# Gengere's ratio of ORs versus survey 1 divided by that of the other four areas, at surveys 2 to 5
+# (interaction coefficient differences), with a joint Wald test that all four equal 1
+h_heterogeneity <- function(fit) {
+  beta <- fixef(fit)
+  l_mat <- map(as.character(2:5), \(s) {
+    l <- set_names(rep(0, length(beta)), names(beta))
+    l[str_c("zone_gGengere:survey", s)] <- 1
+    l[str_c("zone_gMDA_excl:survey", s)] <- -1
+    l
+  }) |> do.call(what = rbind)
+  est <- drop(l_mat %*% beta)
+  vc <- l_mat %*% as.matrix(vcov(fit)) %*% t(l_mat)
+  se <- sqrt(diag(vc))
+  chi2 <- drop(t(est) %*% solve(vc) %*% est)
+  list(
+    by_survey = tibble(survey = 2:5, ratio = exp(est), lcl = exp(est - qnorm(0.975) * se), ucl = exp(est + qnorm(0.975) * se), p = 2 * pnorm(-abs(est / se))),
+    joint = tibble(chi2 = chi2, df = length(est), p = pchisq(chi2, df = length(est), lower.tail = FALSE))
+  )
+}
+het_h_adj <- h_heterogeneity(m_h_adj)
+het_h_unadj <- h_heterogeneity(m_h_unadj)
+
+# Primary MDA+IRS row for reference
+primary_rows_h <-
+  bind_rows(contrasts_prev_unadj |> filter(survey_n == 1), contrasts_prev_h |> filter(survey_n != 1)) |>
+  filter(zone == "MDA") |>
+  transmute(zone_g = "MDA", survey_n, or, lcl, ucl, p = if_else(survey_n == 1, NA_real_, p.value)) |>
+  left_join(contrasts_prev_unadj |> filter(zone == "MDA") |> transmute(survey_n, or_nc = or, lcl_nc = lcl, ucl_nc = ucl), by = "survey_n") |>
+  left_join(h_ror(m4_durability_adj, "zone") |> filter(zone_g == "MDA") |> select(-zone_g), by = "survey_n")
+
+split_rows_h <-
+  bind_rows(ws_h_unadj |> filter(survey_n == 1), ws_h_adj |> filter(survey_n != 1)) |>
+  mutate(p = if_else(survey_n == 1, NA_real_, p)) |>
+  left_join(ws_h_unadj |> transmute(zone_g, survey_n, or_nc = or, lcl_nc = lcl, ucl_nc = ucl), by = c("zone_g", "survey_n")) |>
+  left_join(ror_h, by = c("zone_g", "survey_n"))
+
+# Crude prevalence: Routine, IRS and the whole MDA+IRS zone from one design per survey (strata = zone);
+# Gengere and the other four MDA+IRS areas each from their own clusters
+crude_zone_h <-
+  dat_g |>
+  group_split(survey_n) |>
+  map(\(d) {
+    d |>
+      as_survey(ids = cluster, strata = zone, weights = weight) |>
+      group_by(zone) |>
+      summarise(prop = survey_mean(outcome_rdt * 100, vartype = "ci")) |>
+      mutate(survey_n = d$survey_n[1], zone_g = as.character(zone))
+  }) |>
+  list_rbind() |>
+  select(survey_n, zone_g, prop, prop_low, prop_upp)
+crude_strata_h <-
+  dat_g |>
+  filter(zone_g %in% c("Gengere", "MDA_excl")) |>
+  group_split(survey_n, zone_g) |>
+  map(\(d) {
+    est <- calculate_prop(d |> mutate(zone = droplevels(zone)), key = rdt_result, value = "Positif")
+    tibble(survey_n = d$survey_n[1], zone_g = as.character(d$zone_g[1]), prop = est$prop, prop_low = est$prop_low, prop_upp = est$prop_upp)
+  }) |>
+  list_rbind()
+counts_h <-
+  bind_rows(dat_g |> mutate(zone_g = as.character(zone_g)), dat_g |> filter(zone == "MDA") |> mutate(zone_g = "MDA")) |>
+  summarise(n_tested = n(), .by = c(survey_n, zone_g))
+crude_h <-
+  bind_rows(crude_zone_h |> filter(zone_g %in% c("Routine", "IRS", "MDA")), crude_strata_h) |>
+  left_join(counts_h, by = c("survey_n", "zone_g"))
+
+fmt_p_h <- \(p) case_when(is.na(p) ~ "---", p < 0.001 ~ "<0.001", .default = sprintf("%.3f", p))
+s2_table_h <-
+  bind_rows(split_rows_h, primary_rows_h, tibble(zone_g = "Routine", survey_n = 1:5)) |>
+  left_join(crude_h, by = c("survey_n", "zone_g")) |>
+  left_join(season_lu, by = "survey_n") |>
+  arrange(survey_n, match(zone_g, c("Routine", "MDA", "MDA_excl", "Gengere", "IRS"))) |>
+  transmute(
+    Zone = unname(zone_g_labels[zone_g]), Survey = survey_n, `Months from baseline` = months_from_baseline, Season = season,
+    `N (participants)` = n_tested,
+    `Crude malaria prevalence (95% CI)` = sprintf("%.1f (%.1f-%.1f)", prop, prop_low, prop_upp),
+    `OR (95% CI)` = if_else(zone_g == "Routine", "Reference", fmt_ci(or, lcl, ucl)),
+    `p-value` = if_else(zone_g == "Routine", if_else(survey_n == 1, "---", "Reference"), fmt_p_h(p)),
+    `OR without baseline covariate (95% CI)` = case_when(zone_g == "Routine" ~ "Reference", survey_n == 1 ~ "---", .default = fmt_ci(or_nc, lcl_nc, ucl_nc)),
+    `Ratio of ORs vs survey 1 (95% CI)` = case_when(survey_n == 1 ~ "---", zone_g == "Routine" ~ "Reference", .default = fmt_ci(ror, ror_lcl, ror_ucl))
+  )
+stopifnot(nrow(s2_table_h) == 25, !any(str_detect(unlist(s2_table_h), "NA")))
+print(s2_table_h, n = Inf, width = Inf)
+write_csv(s2_table_h, "output/tables/s2_table_h_gengere_stratum_prevalence.csv")
+
+s2_table_h_heterogeneity <-
+  bind_rows(
+    het_h_adj$by_survey |> mutate(model = "adjusted (primary specification)"),
+    het_h_unadj$by_survey |> mutate(model = "without baseline covariate")
+  ) |>
+  transmute(model, row_type = "by survey", survey, ratio, lcl, ucl, p, chi2 = NA_real_, df = NA_integer_) |>
+  bind_rows(
+    bind_rows(
+      het_h_adj$joint |> mutate(model = "adjusted (primary specification)"),
+      het_h_unadj$joint |> mutate(model = "without baseline covariate")
+    ) |>
+      transmute(model, row_type = "joint Wald test, surveys 2 to 5", chi2, df = as.integer(df), p)
+  )
+print(s2_table_h_heterogeneity, width = Inf)
+write_csv(s2_table_h_heterogeneity, "output/tables/s2_table_h_gengere_heterogeneity_prevalence.csv")
+
+# S11 Table ----
 
 # Net use and household net ownership by zone, survey-weighted, surveys 1, 3 and 5. Survey 2 did not ask the
 # net-use question; the survey 4 item is not reported.
@@ -563,13 +730,13 @@ net_long <-
   ) |>
   arrange(def_i, survey_n, factor(zone, levels = zone_display_levels))
 
-s12_long <-
+s11_long <-
   net_long |>
   transmute(
     survey = survey_n, months_from_baseline, zone = zone_label, measure, n, n_yes, n_clusters,
     pct = round(pct, 2), lcl = round(lcl, 2), ucl = round(ucl, 2), deff = round(deff, 2)
   )
-write_csv(s12_long, "output/tables/s12_table_net_use_by_zone.csv")
+write_csv(s11_long, "output/tables/s11_table_net_use_by_zone.csv")
 
 # Crossover-excluded areas (no zone) per survey, for the table note
 excluded_areas <-
@@ -580,7 +747,7 @@ excluded_areas <-
 
 fmt_cell <- \(pct, lcl, ucl, n) str_c(sprintf("%.1f", pct), " (", sprintf("%.1f", lcl), "-", sprintf("%.1f", ucl), "), n = ", n)
 
-s12_wide <-
+s11_wide <-
   net_long |>
   mutate(cell = fmt_cell(pct, lcl, ucl, n)) |>
   select(def_i, measure, survey_n, months_from_baseline, zone_label, cell) |>
@@ -599,5 +766,5 @@ s12_wide <-
   left_join(excluded_areas |> rename(survey_n = survey, crossover_areas_excluded = areas), by = "survey_n") |>
   transmute(measure, survey = survey_n, months_from_baseline, Routine, `MDA+IRS`, IRS, crossover_areas_excluded = replace_na(crossover_areas_excluded, ""))
 
-print(s12_wide, n = Inf, width = Inf)
-write_csv(s12_wide, "output/tables/s12_table_net_use_by_zone_wide.csv")
+print(s11_wide, n = Inf, width = Inf)
+write_csv(s11_wide, "output/tables/s11_table_net_use_by_zone_wide.csv")

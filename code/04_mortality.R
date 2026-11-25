@@ -1,6 +1,7 @@
 # Mortality: Table 2 (U5MR and CMR by zone), S2 Figure (crude mortality rates), S3 Table
 # panels A to E (ratio of RRs, Awasi-only comparator, survey-3 person-time from 11 July 2022,
-# MDA+IRS vs IRS, design-based models), S10 Table (cause of death) and the CMR dispersion ratio (S1 Text).
+# MDA+IRS vs IRS, design-based models), panel F (Gengere as its own stratum), S9 Table (cause of death)
+# and the CMR dispersion ratio.
 
 pacman::p_load(broom, emmeans, lme4, srvyr, survey, tidyverse)
 
@@ -129,7 +130,7 @@ m_cmr_unadj <- fit_status_model(
   "dat_mort", nlminb_control
 )
 
-# Pearson dispersion of the CMR model (S1 Text 4.6); overdispersion is not modelled.
+# Pearson dispersion of the CMR model; overdispersion is not modelled.
 dispersion_cmr <- sum(residuals(m_cmr_adj, type = "pearson")^2) / df.residual(m_cmr_adj)
 write_csv(tibble(dispersion_ratio = dispersion_cmr), "output/tables/s1_text_cmr_dispersion.csv")
 message("CMR Pearson dispersion ratio: ", round(dispersion_cmr, 4))
@@ -567,7 +568,204 @@ s3_table_e <-
 write_csv(s3_table_e, "output/tables/s3_table_e_design_based_mortality.csv", na = "---")
 print(s3_table_e, n = Inf)
 
-# S10 Table ----
+# S3 Table F ----
+
+# The MDA+IRS zone split into Gengere and the other four MDA+IRS areas (Apala, Lanyi, Ugudo-Zii, Uyandu),
+# otherwise the primary specifications; exploratory, as S2 Table H. CMR from the pooled model (the ratio
+# of RRs versus survey 1 and the Gengere heterogeneity contrast are CMR only), U5MR from the
+# single-survey models.
+zone_g_levels <- c("Routine", "IRS", "MDA_excl", "Gengere")
+zone_g_labels <- c(Routine = "Routine", IRS = "IRS", MDA_excl = "MDA+IRS excluding Gengere", Gengere = "Gengere", MDA = "MDA+IRS (primary model)")
+add_zone_g <- \(d) {
+  d |>
+    mutate(
+      zone_g = case_when(zone == "MDA" & area == "Gengere" ~ "Gengere", zone == "MDA" ~ "MDA_excl", .default = as.character(zone)) |>
+        factor(levels = zone_g_levels),
+      survey_n = as.integer(as.character(survey))
+    )
+}
+dat_m_g <- add_zone_g(dat_mort)
+dat_u5_g <- add_zone_g(dat_mort_u5)
+dat_u5_g_s1 <- filter(dat_u5_g, survey == "1")
+dat_u5_g_s3 <- filter(dat_u5_g, survey == "3")
+dat_u5_g_s5 <- filter(dat_u5_g, survey == "5")
+stopifnot(!anyNA(dat_m_g$zone_g), setequal(unique(dat_m_g$area[dat_m_g$zone_g == "MDA_excl"]), c("Apala", "Lanyi", "Ugudo-Zii", "Uyandu")))
+
+# CMR models: optimiser chosen as for the primary models (nlminbwrap for both)
+m_cmr_g_adj <- fit_status_model(
+  outcome_died ~ zone_g * survey + age_years + sex + status + baseline_mort_ac_z + offset(log_pt) + (1 | cluster_uid/index_hh),
+  "dat_m_g", nlminb_control
+)
+m_cmr_g_unadj <- fit_status_model(
+  outcome_died ~ zone_g * survey + age_years + sex + status + offset(log_pt) + (1 | cluster_uid/index_hh),
+  "dat_m_g", nlminb_control
+)
+
+# U5 models with bobyqa; the primary-zone models without the baseline covariate at surveys 3 and 5
+# supply the MDA+IRS reference row
+bobyqa_control <- glmerControl(optimizer = "bobyqa")
+u5_specs_g <- list(
+  s1 = list(f = outcome_died ~ zone_g + sex + status + offset(log_pt) + (1 | cluster_uid), d = "dat_u5_g_s1"),
+  s3_adj = list(f = outcome_died ~ zone_g + sex + status + baseline_mort_u5_z + offset(log_pt) + (1 | cluster_uid), d = "dat_u5_g_s3"),
+  s5_adj = list(f = outcome_died ~ zone_g + sex + status + baseline_mort_u5_z + offset(log_pt) + (1 | cluster_uid), d = "dat_u5_g_s5"),
+  s3_nc = list(f = outcome_died ~ zone_g + sex + status + offset(log_pt) + (1 | cluster_uid), d = "dat_u5_g_s3"),
+  s5_nc = list(f = outcome_died ~ zone_g + sex + status + offset(log_pt) + (1 | cluster_uid), d = "dat_u5_g_s5"),
+  s3_nc_primary = list(f = outcome_died ~ zone + sex + status + offset(log_pt) + (1 | cluster_uid), d = "dat_u5_g_s3"),
+  s5_nc_primary = list(f = outcome_died ~ zone + sex + status + offset(log_pt) + (1 | cluster_uid), d = "dat_u5_g_s5")
+)
+u5_fits_g <- map(u5_specs_g, \(x) fit_status_model(x$f, x$d, bobyqa_control))
+# A singular or warning fit would not be reported; every one of these fits is usable
+stopifnot(!any(map_lgl(u5_fits_g, \(f) isSingular(f) || length(c(f@optinfo$conv$lme4$messages, unlist(f@optinfo$warnings))) > 0)))
+
+set.seed(20261118)
+g_within <- function(fit, spec) {
+  out <- emmeans(fit, spec, type = "response", offset = log(10000)) |>
+    contrast(method = "trt.vs.ctrl", ref = "Routine", adjust = "mvt") |>
+    summary(infer = TRUE) |>
+    as_tibble()
+  tibble(
+    zone_g = str_remove(as.character(out$contrast), " / Routine"),
+    survey_n = if ("survey" %in% names(out)) as.integer(as.character(out$survey)) else NA_integer_,
+    rr = out$ratio, lcl = out$asymp.LCL, ucl = out$asymp.UCL, p = out$p.value
+  )
+}
+g_ror <- function(fit, factor_name) {
+  contrast(emmeans(fit, as.formula(str_c("~ ", factor_name, " * survey"))), interaction = set_names(c("trt.vs.ctrl", "trt.vs.ctrl"), c(factor_name, "survey")), adjust = "none") |>
+    summary(infer = TRUE) |>
+    as_tibble() |>
+    transmute(
+      zone_g = str_remove(as.character(.data[[str_c(factor_name, "_trt.vs.ctrl")]]), " - Routine"),
+      survey_n = as.integer(str_extract(as.character(survey_trt.vs.ctrl), "^\\d")),
+      ror = exp(estimate), ror_lcl = exp(asymp.LCL), ror_ucl = exp(asymp.UCL)
+    )
+}
+ws_cmr_g_adj <- g_within(m_cmr_g_adj, ~ zone_g | survey)
+ws_cmr_g_unadj <- g_within(m_cmr_g_unadj, ~ zone_g | survey)
+ror_cmr_g <- g_ror(m_cmr_g_adj, "zone_g")
+
+# Gengere's ratio of RRs versus survey 1 divided by that of the other four areas, surveys 3 and 5, with a
+# joint Wald test that both equal 1
+g_heterogeneity <- function(fit) {
+  beta <- fixef(fit)
+  l_mat <- map(c("3", "5"), \(s) {
+    l <- set_names(rep(0, length(beta)), names(beta))
+    l[str_c("zone_gGengere:survey", s)] <- 1
+    l[str_c("zone_gMDA_excl:survey", s)] <- -1
+    l
+  }) |> do.call(what = rbind)
+  est <- drop(l_mat %*% beta)
+  vc <- l_mat %*% as.matrix(vcov(fit)) %*% t(l_mat)
+  se <- sqrt(diag(vc))
+  chi2 <- drop(t(est) %*% solve(vc) %*% est)
+  list(
+    by_survey = tibble(survey = c(3L, 5L), ratio = exp(est), lcl = exp(est - qnorm(0.975) * se), ucl = exp(est + qnorm(0.975) * se), p = 2 * pnorm(-abs(est / se))),
+    joint = tibble(chi2 = chi2, df = length(est), p = pchisq(chi2, df = length(est), lower.tail = FALSE))
+  )
+}
+het_cmr_g_adj <- g_heterogeneity(m_cmr_g_adj)
+het_cmr_g_unadj <- g_heterogeneity(m_cmr_g_unadj)
+
+ws_u5_g <- bind_rows(
+  g_within(u5_fits_g$s1, ~ zone_g) |> mutate(survey_n = 1L),
+  g_within(u5_fits_g$s3_adj, ~ zone_g) |> mutate(survey_n = 3L),
+  g_within(u5_fits_g$s5_adj, ~ zone_g) |> mutate(survey_n = 5L)
+)
+ws_u5_g_nc <- bind_rows(
+  g_within(u5_fits_g$s3_nc, ~ zone_g) |> mutate(survey_n = 3L),
+  g_within(u5_fits_g$s5_nc, ~ zone_g) |> mutate(survey_n = 5L)
+)
+u5_primary_nc <- bind_rows(
+  g_within(u5_fits_g$s3_nc_primary, ~ zone) |> mutate(survey_n = 3L),
+  g_within(u5_fits_g$s5_nc_primary, ~ zone) |> mutate(survey_n = 5L)
+) |>
+  filter(zone_g == "MDA")
+
+# Crude rates per stratum from the primary design (the two MDA+IRS strata are domains of its stratum)
+crude_rates_g <- function(data, group_var) {
+  data |>
+    group_split(survey_n) |>
+    map(\(df) {
+      build_mort_design(df) |>
+        group_by(zone_g = as.character({{ group_var }})) |>
+        summarise(
+          deaths = unweighted(sum(outcome_died)),
+          pt_sum = unweighted(sum(pt)),
+          rate = survey_ratio(outcome_died * 10000, pt, vartype = "ci", na.rm = TRUE)
+        ) |>
+        mutate(survey_n = unique(df$survey_n))
+    }) |>
+    bind_rows() |>
+    mutate(lcl = pmax(rate_low, 0), ucl = rate_upp, .keep = "unused")
+}
+crude_cmr_g <- bind_rows(crude_rates_g(dat_m_g, zone_g), crude_rates_g(dat_m_g, zone) |> filter(zone_g == "MDA"))
+crude_u5_g <- bind_rows(crude_rates_g(dat_u5_g, zone_g), crude_rates_g(dat_u5_g, zone) |> filter(zone_g == "MDA"))
+
+primary_cmr_g <-
+  bind_rows(contrasts_cmr_unadj |> filter(survey_n == 1), contrasts_cmr_adj |> filter(survey_n != 1)) |>
+  filter(zone == "MDA") |>
+  transmute(zone_g = "MDA", survey_n, rr, lcl, ucl, p = if_else(survey_n == 1, NA_real_, p.value)) |>
+  left_join(contrasts_cmr_unadj |> filter(zone == "MDA", survey_n != 1) |> transmute(survey_n, rr_nc = rr, lcl_nc = lcl, ucl_nc = ucl), by = "survey_n") |>
+  left_join(g_ror(m_cmr_adj, "zone") |> filter(zone_g == "MDA") |> select(-zone_g), by = "survey_n")
+primary_u5_g <-
+  bind_rows(contrasts_u5_unadj, contrasts_u5) |>
+  filter(zone == "MDA") |>
+  transmute(zone_g = "MDA", survey_n, rr, lcl, ucl, p = if_else(survey_n == 1, NA_real_, p.value)) |>
+  left_join(u5_primary_nc |> transmute(survey_n, rr_nc = rr, lcl_nc = lcl, ucl_nc = ucl), by = "survey_n")
+split_cmr_g <-
+  bind_rows(ws_cmr_g_unadj |> filter(survey_n == 1), ws_cmr_g_adj |> filter(survey_n != 1)) |>
+  mutate(p = if_else(survey_n == 1, NA_real_, p)) |>
+  left_join(ws_cmr_g_unadj |> filter(survey_n != 1) |> transmute(zone_g, survey_n, rr_nc = rr, lcl_nc = lcl, ucl_nc = ucl), by = c("zone_g", "survey_n")) |>
+  left_join(ror_cmr_g, by = c("zone_g", "survey_n"))
+split_u5_g <-
+  ws_u5_g |>
+  mutate(p = if_else(survey_n == 1, NA_real_, p)) |>
+  left_join(ws_u5_g_nc |> transmute(zone_g, survey_n, rr_nc = rr, lcl_nc = lcl, ucl_nc = ucl), by = c("zone_g", "survey_n"))
+
+fmt_p_g <- \(p) case_when(is.na(p) ~ "---", p < 0.001 ~ "<0.001", .default = sprintf("%.3f", p))
+build_panel_f <- function(est, crude, outcome) {
+  est <- bind_rows(est, tibble(zone_g = "Routine", survey_n = c(1L, 3L, 5L)))
+  for (v in setdiff(c("rr", "lcl", "ucl", "p", "rr_nc", "lcl_nc", "ucl_nc", "ror", "ror_lcl", "ror_ucl"), names(est))) est[[v]] <- NA_real_
+  est |>
+    left_join(crude |> rename(rate_lcl = lcl, rate_ucl = ucl), by = c("zone_g", "survey_n")) |>
+    left_join(timepoint_lu, by = "survey_n") |>
+    mutate(uninformative = outcome == "U5MR" & zone_g == "Gengere" & survey_n %in% c(3L, 5L)) |>
+    arrange(survey_n, match(zone_g, c("Routine", "MDA", "MDA_excl", "Gengere", "IRS"))) |>
+    transmute(
+      Outcome = outcome, Zone = unname(zone_g_labels[zone_g]), Survey = survey_n, `Months from baseline` = months_from_baseline,
+      `Deaths / person-days` = sprintf("%d / %.0f", deaths, pt_sum),
+      `Crude rate per 10,000 person-days (95% CI)` = fmt_ci(rate, rate_lcl, rate_ucl),
+      `RR (95% CI)` = if_else(zone_g == "Routine", "Reference", fmt_ci(rr, lcl, ucl)),
+      `p-value` = case_when(zone_g == "Routine" & survey_n == 1 ~ "---", zone_g == "Routine" ~ "Reference", .default = fmt_p_g(p)),
+      `RR without baseline covariate (95% CI)` = case_when(zone_g == "Routine" ~ "Reference", survey_n == 1 ~ "---", .default = fmt_ci(rr_nc, lcl_nc, ucl_nc)),
+      `Ratio of RRs vs survey 1 (95% CI)` = case_when(outcome == "U5MR" | survey_n == 1 ~ "---", zone_g == "Routine" ~ "Reference", .default = fmt_ci(ror, ror_lcl, ror_ucl)),
+      Note = if_else(uninformative, str_c("uninformative: ", deaths, " deaths in this stratum"), "")
+    )
+}
+s3_table_f <- bind_rows(
+  build_panel_f(bind_rows(split_u5_g, primary_u5_g), crude_u5_g, "U5MR"),
+  build_panel_f(bind_rows(split_cmr_g, primary_cmr_g), crude_cmr_g, "CMR (all ages)")
+)
+stopifnot(nrow(s3_table_f) == 30, !any(str_detect(unlist(s3_table_f), "NA")))
+print(s3_table_f, n = Inf, width = Inf)
+write_csv(s3_table_f, "output/tables/s3_table_f_gengere_stratum_mortality.csv")
+
+s3_table_f_heterogeneity <-
+  bind_rows(
+    het_cmr_g_adj$by_survey |> mutate(model = "adjusted (primary specification)"),
+    het_cmr_g_unadj$by_survey |> mutate(model = "without baseline covariate")
+  ) |>
+  transmute(outcome = "CMR (all ages)", model, row_type = "by survey", survey, ratio, lcl, ucl, p, chi2 = NA_real_, df = NA_integer_) |>
+  bind_rows(
+    bind_rows(
+      het_cmr_g_adj$joint |> mutate(model = "adjusted (primary specification)"),
+      het_cmr_g_unadj$joint |> mutate(model = "without baseline covariate")
+    ) |>
+      transmute(outcome = "CMR (all ages)", model, row_type = "joint Wald test, surveys 3 and 5", chi2, df = as.integer(df), p)
+  )
+print(s3_table_f_heterogeneity, width = Inf)
+write_csv(s3_table_f_heterogeneity, "output/tables/s3_table_f_gengere_heterogeneity_mortality.csv")
+
+# S9 Table ----
 
 # Deaths included in the mortality models, by zone, survey and age group; counts and proportions only.
 cause_levels <- c(
@@ -605,7 +803,7 @@ deaths <-
   )
 stopifnot(!anyNA(deaths$cause))
 
-s10_table <-
+s9_table <-
   bind_rows(
     deaths |> mutate(age_group = "All ages"),
     deaths |> filter(age_years < 5) |> mutate(age_group = "Under five")
@@ -619,4 +817,4 @@ s10_table <-
   mutate(zone = zone_display(zone)) |>
   arrange(survey, age_group, zone, cause) |>
   rename(deaths_n = n, pct_of_deaths = pct)
-write_csv(s10_table, "output/tables/s10_table_cause_of_death.csv")
+write_csv(s9_table, "output/tables/s9_table_cause_of_death.csv")

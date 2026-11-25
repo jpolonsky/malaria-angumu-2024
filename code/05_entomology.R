@@ -1,6 +1,9 @@
 # Entomological surveillance: Table 3 (zone x half-year indicators), Figure 5 (estimated HBR by health
-# area), S3 Figure (monthly indicators by zone), the entomology numbers quoted in S1 Text and the
-# S5 Table workbook (Additional file 2).
+# area and quarterly sporozoite rate by zone), S3 Figure (monthly indicators by zone), S5 Figure (2-month
+# periods), S12 Table (cone bioassays after IRS round 2), the entomology numbers quoted in S1 Text
+# (including the selection-weighted sporozoite rate and the monthly-averaged EIR) and the S5 Table
+# workbook (Additional file 2). Estimated HBR and EIR are reported per occupant-night, the catch divided
+# by household members, with EIR estimated per year (HBR x sporozoite rate x 365) and shown per month.
 
 pacman::p_load(patchwork, ggrepel, glmmTMB, openxlsx, tidyverse)
 
@@ -302,7 +305,8 @@ fit_period <- ento_fit(unit = "period", n_boot = n_boot_table)
 table3_long <- fit_to_long(fit_period)
 table3_full <- table3_rows(table3_long)
 
-# Main-text version: zone rows only, three measures; EIR is blank wherever the sporozoite rate is
+# Main-text version: zone rows only, three measures; EIR is blank wherever the sporozoite rate is.
+# HBR and EIR per occupant-night; EIR estimated per year and shown per month (divided by 12).
 table3 <-
   table3_full |>
   transmute(
@@ -313,8 +317,8 @@ table3 <-
     `Anopheles in working traps` = format(anopheles_working_traps, big.mark = ",", trim = TRUE),
     `Mosquitoes tested (positive)` = if_else(mosquitoes_tested > 0, str_c(format(mosquitoes_tested, big.mark = ",", trim = TRUE), " (", format(sporozoite_positives, big.mark = ",", trim = TRUE), ")"), NA_character_),
     `Sporozoite rate % (95% CI)` = fmt_est_ci(sporozoite_rate_pooled, sporozoite_pooled_lcl, sporozoite_pooled_ucl, scale = 100, digits = 1),
-    `HBR (95% CI)` = fmt_est_ci(hbr, hbr_lcl, hbr_ucl),
-    `EIR per year (95% CI)` = fmt_est_ci(eir_annual, eir_lcl, eir_ucl, digits = 2, signif = TRUE)
+    `HBR per occupant-night (95% CI)` = fmt_est_ci(hbr_per_occupant, hbr_per_occupant_lcl, hbr_per_occupant_ucl),
+    `EIR per person per month (95% CI)` = fmt_est_ci(eir_per_occupant_annual, eir_per_occupant_lcl, eir_per_occupant_ucl, scale = 1 / 12, digits = 2, signif = TRUE)
   )
 write_csv(table3, "output/tables/table3_entomology.csv")
 print(table3, width = Inf)
@@ -362,6 +366,7 @@ by_area <-
   summarise(
     trap_nights = n(), trapped_months = n_distinct(month), anopheles = sum(n_anoph),
     hbr = sum(n_anoph) / n(), density = sum(n_anoph[random_house]) / sum(random_house),
+    hbr_per_occupant = sum(n_anoph[!is.na(persons)]) / sum(persons, na.rm = TRUE),
     .by = c(zone, area, period)
   ) |>
   left_join(
@@ -371,18 +376,22 @@ by_area <-
   mutate(
     sporozoite_rate = if_else(tested > 0, positives / tested, NA_real_),
     eir_annual = hbr * sporozoite_rate * 365,
+    eir_per_occupant_annual = hbr_per_occupant * sporozoite_rate * 365,
     tested_share = tested / mosquitoes,
     zone = as.character(zone_display(zone)),
     in_zone_estimate = trapped_months >= 3
   ) |>
   arrange(match(zone, unname(zone_display_labels[zone_display_levels])), area, period)
 
-# Area-level HBR ratios (P3 and P5 against P1), point estimates
+# Area-level HBR ratios (P3 and P5 against P1), point estimates, per occupant-night and per trap-night
 area_change <-
   by_area |>
-  select(zone, area, period, hbr, trapped_months) |>
-  pivot_wider(names_from = period, values_from = c(hbr, trapped_months)) |>
-  mutate(ratio_p3_p1 = hbr_P3 / hbr_P1, ratio_p5_p1 = hbr_P5 / hbr_P1)
+  select(zone, area, period, hbr_per_occupant, hbr, trapped_months) |>
+  pivot_wider(names_from = period, values_from = c(hbr_per_occupant, hbr, trapped_months)) |>
+  mutate(
+    ratio_p3_p1 = hbr_per_occupant_P3 / hbr_per_occupant_P1, ratio_p5_p1 = hbr_per_occupant_P5 / hbr_per_occupant_P1,
+    ratio_p3_p1_trap_night = hbr_P3 / hbr_P1, ratio_p5_p1_trap_night = hbr_P5 / hbr_P1
+  )
 
 # Figure 5 ----
 
@@ -408,6 +417,7 @@ calendar <-
     "IRS", "IRS round 2", as.Date("2023-02-02"), as.Date("2023-05-31"),
     "MDA", "MDA rounds 1-2", as.Date("2022-07-01"), as.Date("2022-08-31"),
     "MDA", "MDA rounds 3-4", as.Date("2023-01-01"), as.Date("2023-02-28"),
+    "ITN", "ITN distribution, Awasi", as.Date("2023-08-01"), as.Date("2023-08-31"),
     "ITN", "ITN distribution", as.Date("2023-12-01"), as.Date("2023-12-31"),
     "Survey", "Survey 2", as.Date("2022-11-01"), as.Date("2022-12-15"),
     "Survey", "Survey 3", as.Date("2023-04-01"), as.Date("2023-05-15"),
@@ -454,14 +464,15 @@ p_rain <-
   x_scale + labs(y = "Rainfall\n(PNLP weekly series, mm)") + theme_ento +
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 
-# One line per health area on calendar quarters, one panel per assigned zone. Gengere is drawn
-# heavier; open marks: fewer than 30 working trap-nights in the quarter; dashed segments: after the
-# area received its first intervention. Pseudo-log axis keeps zero-catch quarters on the plot.
+# Estimated HBR per occupant-night, one line per health area on calendar quarters, one panel per
+# assigned zone. Gengere is drawn heavier; open marks: fewer than 30 working trap-nights in the quarter;
+# dashed segments: after the area received its first intervention. Pseudo-log axis keeps zero-catch
+# quarters on the plot.
 q_pts <-
   ento_trapnights |>
   filter(working, !is.na(n_anoph), date >= as.Date("2022-06-01"), date <= as.Date("2024-11-30")) |>
   mutate(q_start = floor_date(date, "quarter")) |>
-  summarise(trap_nights = n(), months = n_distinct(month), hbr = sum(n_anoph) / n(), .by = c(zone_assigned, area, q_start)) |>
+  summarise(trap_nights = n(), months = n_distinct(month), hbr = sum(n_anoph[!is.na(persons)]) / sum(persons, na.rm = TRUE), .by = c(zone_assigned, area, q_start)) |>
   filter(months >= 2) |>
   left_join(ento_crossover_date, by = "area") |>
   mutate(
@@ -497,14 +508,44 @@ p_area <-
   scale_y_continuous(transform = scales::pseudo_log_trans(base = 10, sigma = 0.03), breaks = c(0, 0.1, 1, 10), labels = c("0", "0.1", "1", "10")) +
   facet_grid(zone ~ .) +
   x_scale + coord_cartesian(clip = "off") +
-  labs(y = "HBR (Anopheles per working trap-night)") +
+  labs(y = "HBR (Anopheles per occupant-night)") +
   theme_ento + theme(strip.text.y = element_text(angle = 0, hjust = 0), axis.text.x = element_blank(), axis.ticks.x = element_blank())
 
+# Panel C: pooled sporozoite rate by as-treated zone and calendar quarter, from January 2023, exact
+# 95% CI (Gengere stays inside MDA+IRS). Quarters with fewer than 10 tested mosquitoes are dropped;
+# open marks below 30.
+zone_label_levels <- unname(zone_display_labels[zone_display_levels])
+sr_quarter <-
+  ento_mosq |>
+  filter(date >= ento_spz_start, date <= as.Date("2024-11-30"), !is.na(zone), tested) |>
+  mutate(q_start = floor_date(date, "quarter"), zone = factor(as.character(zone_display(zone)), levels = zone_label_levels)) |>
+  summarise(tested_n = n(), positives = sum(spz_result %in% "Positive"), .by = c(zone, q_start)) |>
+  mutate(
+    sr = positives / tested_n,
+    lcl = if_else(positives > 0, qbeta(0.025, positives, tested_n - positives + 1), 0),
+    ucl = if_else(positives < tested_n, qbeta(0.975, positives + 1, tested_n - positives), 1),
+    x = q_start + 45 + c(-5, 0, 5)[as.integer(zone)]
+  ) |>
+  filter(tested_n >= 10) |>
+  arrange(zone, q_start)
+write_csv(sr_quarter |> select(-x) |> mutate(zone = as.character(zone)), "output/tables/figure5_quarterly_sr_pooled.csv")
+
+p_sr_quarter <-
+  ggplot(sr_quarter, aes(x, 100 * sr, colour = zone)) +
+  annotate("rect", xmin = as.Date("2023-02-02"), xmax = as.Date("2023-05-31"), ymin = -Inf, ymax = Inf, fill = "grey93") +
+  geom_linerange(aes(ymin = 100 * lcl, ymax = 100 * ucl), alpha = 0.5) +
+  geom_line(linewidth = 0.6) +
+  geom_point(aes(shape = tested_n < 30), size = 1.8, fill = "white") +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 21), guide = "none") +
+  scale_colour_manual(values = zone_cols_lab) +
+  labs(y = "Sporozoite rate, %\n(pooled, exact 95% CI)", colour = NULL) +
+  theme_ento + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = "bottom")
+
 figure5 <-
-  (p_cal / p_area / (p_rain + theme(axis.text.x = element_text(), axis.ticks.x = element_line()))) +
-  plot_layout(heights = c(1, 5.5, 1)) &
+  (p_cal / p_area / (p_sr_quarter + theme(axis.text.x = element_text(), axis.ticks.x = element_line()))) +
+  plot_layout(heights = c(1, 5.5, 1.8)) + plot_annotation(tag_levels = "A") &
   scale_x_date(limits = c(as.Date("2022-06-01"), as.Date("2025-03-01")), date_breaks = "3 months", date_labels = "%b\n%Y", expand = expansion(mult = 0.01))
-ggsave("output/figures/figure5_hbr_by_health_area.png", figure5, width = 9, height = 9, dpi = 300)
+ggsave("output/figures/figure5_hbr_by_health_area.png", figure5, width = 9, height = 10, dpi = 300)
 
 # S1 Text ----
 
@@ -604,9 +645,10 @@ min_trap_nights <- 20
 
 # n_tested_min: sporozoite-based panels show a zone-month only with at least this many tested
 # mosquitoes; open marks below 30. trap_col: trap-night count behind the open-mark rule (random-house
-# trap-nights for density). The catch-rate panels use a pseudo-log axis that keeps zero months.
-panel_metric <- function(est, lcl, ucl, ylab, pseudo_log = FALSE, n_tested_min = NULL, trap_col = "trap_nights") {
-  d <- monthly_plot |> mutate(v = .data[[est]], lo = .data[[lcl]], hi = .data[[ucl]], thin = .data[[trap_col]] < min_trap_nights)
+# trap-nights for density). scale multiplies the values (1 / 12 turns annual EIR into per month). The
+# catch-rate panels use a pseudo-log axis that keeps zero months.
+panel_metric <- function(est, lcl, ucl, ylab, pseudo_log = FALSE, n_tested_min = NULL, trap_col = "trap_nights", scale = 1) {
+  d <- monthly_plot |> mutate(v = scale * .data[[est]], lo = scale * .data[[lcl]], hi = scale * .data[[ucl]], thin = .data[[trap_col]] < min_trap_nights)
   if (!is.null(n_tested_min)) d <- d |> mutate(across(c(v, lo, hi), \(x) if_else(mosquitoes_tested >= n_tested_min, x, NA_real_)), thin = mosquitoes_tested < 30)
   p <-
     ggplot(d, aes(month_x, v, colour = zone, linetype = zone)) +
@@ -629,8 +671,8 @@ panel_metric <- function(est, lcl, ucl, ylab, pseudo_log = FALSE, n_tested_min =
 
 no_x <- theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 p_sr <- panel_metric("sr_pooled", "sr_pooled_lcl", "sr_pooled_ucl", "Sporozoite rate\n(pooled, exact CI)", n_tested_min = 10) + no_x
-p_hbr <- panel_metric("estimate_hbr", "lcl_hbr", "ucl_hbr", "HBR\n(Anopheles per working\ntrap-night, \nlog scale)", pseudo_log = TRUE) + no_x
-p_eir <- panel_metric("estimate_eir_annual", "lcl_eir_annual", "ucl_eir_annual", "EIR\n(infective Anopheles per\ntrap per year)", n_tested_min = 10) + no_x
+p_hbr <- panel_metric("estimate_hbr_person", "lcl_hbr_person", "ucl_hbr_person", "HBR\n(Anopheles per\noccupant-night, \nlog scale)", pseudo_log = TRUE) + no_x
+p_eir <- panel_metric("estimate_eir_person_annual", "lcl_eir_person_annual", "ucl_eir_person_annual", "EIR\n(infective bites per\nperson per month)", n_tested_min = 10, scale = 1 / 12) + no_x
 p_density <- panel_metric("estimate_density", "lcl_density", "ucl_density", "Density, random houses\n(Anopheles per working\ntrap-night, \nlog scale)", pseudo_log = TRUE, trap_col = "trap_nights_random") +
   theme(axis.text.x = element_text(), axis.ticks.x = element_line())
 
@@ -640,6 +682,76 @@ s3_figure <-
   plot_annotation(tag_levels = "A") &
   theme(legend.position = "bottom", legend.title = element_blank())
 ggsave("output/figures/s3_figure_entomology_monthly.png", s3_figure, width = 9, height = 12, dpi = 300)
+
+# S5 Figure ----
+
+# The protocol's 2-month reporting periods (January-February, March-April, ...; November 2024 alone), with
+# the same engine as Table 3 run with the month unit set to the 2-month period, to 30 November 2024.
+# Sporozoite rate and EIR from January 2023 and only where at least 10 mosquitoes were tested; open
+# points below 30 tested. Values also in S5 Table sheet F.
+bimonth <- \(d) make_date(year(d), 2 * ((month(d) - 1) %/% 2) + 1, 1)
+window_end <- as.Date("2024-11-30")
+fit_bm <- ento_fit(
+  tn = ento_trapnights |> filter(date <= window_end) |> mutate(month = bimonth(date)),
+  mq = ento_mosq |> filter(date <= window_end) |> mutate(month = bimonth(date)),
+  unit = "month", n_boot = n_boot_table
+)
+
+bm <-
+  fit_bm$estimates |>
+  filter(metric %in% c("hbr_person", "eir_person_annual")) |>
+  select(metric, zone, u, estimate, lcl, ucl) |>
+  pivot_wider(names_from = metric, values_from = c(estimate, lcl, ucl)) |>
+  left_join(fit_bm$counts, by = c("zone", "u")) |>
+  mutate(
+    period_start = as.Date(u),
+    period_end = pmin(period_start %m+% months(2) - 1, window_end),
+    sr_ok = period_start >= ento_spz_start & mosquitoes_tested >= 10,
+    sr = if_else(sr_ok, sporozoite_positives / mosquitoes_tested, NA_real_),
+    sr_lcl = if_else(sr_ok, qbeta(0.025, sporozoite_positives, mosquitoes_tested - sporozoite_positives + 1), NA_real_),
+    sr_ucl = if_else(sr_ok, qbeta(0.975, sporozoite_positives + 1, mosquitoes_tested - sporozoite_positives), NA_real_),
+    across(c(estimate_eir_person_annual, lcl_eir_person_annual, ucl_eir_person_annual), \(x) if_else(sr_ok, x / 12, NA_real_))
+  ) |>
+  arrange(period_start, match(zone, zone_display_levels))
+
+bimonthly <-
+  bm |>
+  transmute(
+    period_start, period_end, zone = as.character(zone_display(zone)), health_areas = areas, areas_included,
+    working_trap_nights = trap_nights, anopheles_working_traps, mosquitoes_tested, sporozoite_positives,
+    sporozoite_rate_pooled = sr, sporozoite_lcl = sr_lcl, sporozoite_ucl = sr_ucl,
+    hbr_per_occupant = estimate_hbr_person, hbr_per_occupant_lcl = lcl_hbr_person, hbr_per_occupant_ucl = ucl_hbr_person,
+    eir_per_occupant_month = estimate_eir_person_annual, eir_per_occupant_month_lcl = lcl_eir_person_annual, eir_per_occupant_month_ucl = ucl_eir_person_annual
+  )
+stopifnot(!anyDuplicated(bimonthly[c("period_start", "zone")]), nrow(bimonthly) == 48)
+write_csv(bimonthly, "output/tables/s5_figure_entomology_bimonthly.csv")
+
+d_bm <- bm |> mutate(zone = factor(zone, levels = zone_display_levels), x = period_start + (period_end - period_start) / 2 + c(-8, 0, 8)[as.integer(zone)], thin = mosquitoes_tested < 30)
+panel_bm <- function(est, lcl, ucl, ylab, open_rule = TRUE) {
+  # a new line group after every suppressed period, so that lines do not bridge gaps
+  dd <-
+    d_bm |>
+    mutate(v = .data[[est]], lo = .data[[lcl]], hi = .data[[ucl]], open = open_rule & thin) |>
+    arrange(zone, period_start) |>
+    mutate(run = str_c(zone, cumsum(is.na(v))), .by = zone)
+  ggplot(dd, aes(x, v, colour = zone, group = run)) +
+    geom_linerange(aes(ymin = lo, ymax = hi), alpha = 0.6, na.rm = TRUE) +
+    geom_line(na.rm = TRUE, linewidth = 0.4) +
+    geom_point(aes(shape = open), size = 1.6, fill = "white", na.rm = TRUE) +
+    scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 21), guide = "none") +
+    scale_colour_manual(values = zone_cols, labels = unname(zone_display_labels[zone_display_levels])) +
+    scale_x_date(date_breaks = "2 months", date_labels = "%b\n%Y", limits = c(as.Date("2022-04-15"), as.Date("2024-12-31")), expand = c(0, 0)) +
+    labs(x = NULL, y = ylab, colour = NULL) +
+    theme_minimal(base_size = 9) +
+    theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+}
+p_bm_sr <- panel_bm("sr", "sr_lcl", "sr_ucl", "Sporozoite rate\n(pooled, exact CI)") + scale_y_continuous(labels = scales::percent) + theme(axis.text.x = element_blank())
+p_bm_hbr <- panel_bm("estimate_hbr_person", "lcl_hbr_person", "ucl_hbr_person", "HBR\n(Anopheles per\noccupant-night,\nlog scale)", open_rule = FALSE) +
+  scale_y_continuous(transform = scales::pseudo_log_trans(base = 10, sigma = 0.05), breaks = c(0, 0.1, 1, 10, 100), labels = c("0", "0.1", "1", "10", "100")) +
+  theme(axis.text.x = element_blank())
+p_bm_eir <- panel_bm("estimate_eir_person_annual", "lcl_eir_person_annual", "ucl_eir_person_annual", "EIR\n(infective bites per\nperson per month)")
+s5_figure <- (p_bm_sr / p_bm_hbr / p_bm_eir) + plot_layout(guides = "collect") + plot_annotation(tag_levels = "A") & theme(legend.position = "bottom")
+ggsave("output/figures/s5_figure_entomology_bimonthly.png", s5_figure, width = 9, height = 8, dpi = 300)
 
 # S5 Table ----
 
@@ -877,19 +989,22 @@ model_diagnostics <- bind_rows(imap(fits, diag_row))
 model_heterogeneity <- heterogeneity |> mutate(zone = as.character(zone_display(zone)))
 
 # Workbook: Read me, A zones, B MDA+IRS split, C health areas, D sensitivity / contrasts / model
-# check, E P0. Units: HBR is Anopheles per working trap-night (CDC light trap, not a human landing
-# catch); EIR is infective Anopheles per trap per year. Ratios, rates and indices are given to two
-# significant figures when the upper limit exceeds 10 times the lower; percentages are not.
-eir_label <- "infective Anopheles per trap per year"
+# check / heterogeneity, E P0, F 2-month periods. Units: HBR is reported per occupant-night, the catch
+# in a CDC light trap (not a human landing catch) divided by household members, with EIR per person per
+# month; the per-working-trap-night versions are kept alongside. Ratios, rates and indices are given to
+# two significant figures when the upper limit exceeds 10 times the lower; percentages are not.
+# EIR is estimated per year (HBR x sporozoite rate x 365) and reported per month (divided by 12).
+eir_label <- "infective Anopheles per trap per month"
+eir_scale <- 1 / 12
 metric_label <- c(
   hbr = "HBR (Anopheles per working trap-night)",
   density = "Density (Anopheles per working trap-night, randomly selected houses)",
   hbr_person = "HBR per occupant-night",
   sr = "Sporozoite rate",
   eir_annual = str_c("EIR (", eir_label, ")"),
-  eir_person_annual = "EIR per occupant (infective bites per year)"
+  eir_person_annual = "EIR per occupant (infective bites per month)"
 )
-metric_digits <- c(hbr = 2, density = 2, hbr_person = 2, sr = 1, eir_annual = 1, eir_person_annual = 1)
+metric_digits <- c(hbr = 2, density = 2, hbr_person = 2, sr = 1, eir_annual = 2, eir_person_annual = 2)
 variant_label <- c(
   primary = "Primary (population weights, site resampling)",
   equal_area_weights = "Equal weight for every health area within a zone",
@@ -912,7 +1027,7 @@ comparison_label <- c(
 )
 adjust_label <- c(month_of_year = "Month of year", rainfall_4wk = "Rainfall, four weeks before the trap-night")
 
-est_ci <- \(d, est, lcl, ucl, digits) fmt_est_ci_sf(d[[est]], d[[lcl]], d[[ucl]], digits = digits)
+est_ci <- \(d, est, lcl, ucl, digits, scale = 1) fmt_est_ci_sf(d[[est]], d[[lcl]], d[[ucl]], digits = digits, scale = scale)
 pct_ci <- \(d, est, lcl, ucl) fmt_est_ci_sf(d[[est]], d[[lcl]], d[[ucl]], digits = 1, scale = 100, sf_rule = FALSE)
 eir_col <- str_c("EIR, ", eir_label, " (95% CI)")
 
@@ -930,14 +1045,14 @@ panel_tbl <- function(d, ratio_p5_p1 = NULL) {
       `Sporozoite rate pooled, % (95% CI)` = pct_ci(d, "sr_pooled", "sr_pooled_lcl", "sr_pooled_ucl"),
       `Sporozoite rate population-weighted, % (95% CI)` = pct_ci(d, "sr_popweighted", "sr_popweighted_lcl", "sr_popweighted_ucl"),
       `Difference, percentage points` = round(d$sr_divergence_pp, 1),
-      `HBR (95% CI)` = est_ci(d, "hbr", "hbr_lcl", "hbr_ucl", 2),
-      `Density (95% CI)` = est_ci(d, "density", "density_lcl", "density_ucl", 2),
-      !!eir_col := est_ci(d, "eir_annual", "eir_lcl", "eir_ucl", 1),
       `HBR per occupant-night (95% CI)` = est_ci(d, "hbr_per_occupant", "hbr_per_occupant_lcl", "hbr_per_occupant_ucl", 2),
-      `EIR per occupant, infective bites per year (95% CI)` = est_ci(d, "eir_per_occupant_annual", "eir_per_occupant_lcl", "eir_per_occupant_ucl", 1)
+      `EIR per occupant, infective bites per month (95% CI)` = est_ci(d, "eir_per_occupant_annual", "eir_per_occupant_lcl", "eir_per_occupant_ucl", 2, scale = eir_scale),
+      `HBR per working trap-night (95% CI)` = est_ci(d, "hbr", "hbr_lcl", "hbr_ucl", 2),
+      !!eir_col := est_ci(d, "eir_annual", "eir_lcl", "eir_ucl", 2, scale = eir_scale),
+      `Density (95% CI)` = est_ci(d, "density", "density_lcl", "density_ucl", 2)
     )
   if (!is.null(ratio_p5_p1)) {
-    out[["HBR ratio, P5 vs P1 (point estimate)"]] <- if_else(is.na(ratio_p5_p1), NA_character_, sprintf("%.2f", ratio_p5_p1))
+    out[["HBR per occupant-night ratio, P5 vs P1 (point estimate)"]] <- if_else(is.na(ratio_p5_p1), NA_character_, sprintf("%.2f", ratio_p5_p1))
   }
   out
 }
@@ -958,7 +1073,7 @@ panel_c <- panel_tbl(area_rows, ratio_p5_p1 = area_ratio_by_row)
 panel_d_sens <-
   sens_estimates |>
   mutate(
-    est_ci = fmt_est_ci_sf(estimate, lcl, ucl, digits = unname(metric_digits[metric]), scale = if_else(metric == "sr", 100, 1), sf_rule = metric != "sr"),
+    est_ci = fmt_est_ci_sf(estimate, lcl, ucl, digits = unname(metric_digits[metric]), scale = case_when(metric == "sr" ~ 100, metric %in% c("eir_annual", "eir_person_annual") ~ eir_scale, .default = 1), sf_rule = metric != "sr"),
     measure = if_else(metric == "sr", "Sporozoite rate, %", unname(metric_label[metric]))
   ) |>
   transmute(Variant = unname(variant_label[variant]), Measure = measure, Zone = zone, Period = period, `Estimate (95% CI)` = est_ci)
@@ -979,6 +1094,15 @@ panel_d_check <-
     Adjustment = unname(adjust_label[adjust]),
     Comparison = unname(comparison_label[comparison]), Zone = zone, Period = period,
     `Ratio (95% CI)` = ratio_ci(pick(estimate, lcl, ucl))
+  )
+
+# Likelihood-ratio test of an area x period interaction (P3 against P1), per zone; cited in S1 Text 6.8
+panel_d_het <-
+  model_heterogeneity |>
+  transmute(
+    Zone = zone, `Health areas` = areas,
+    `Chi-squared` = sprintf("%.1f", lrt_chisq), df = lrt_df,
+    `p-value` = if_else(lrt_p < 0.001, "<0.001", sprintf("%.3f", lrt_p))
   )
 
 # Sheet E: P0 runs from 1 May to 30 June 2022, so no mosquitoes were tested and sporozoite rate and
@@ -1023,14 +1147,29 @@ change_ratios <-
   arrange(cmp_order, metric_order, match(Zone, c("Routine", "MDA+IRS", "IRS"))) |>
   select(-cmp_order, -metric_order)
 
+# Sheet F: 2-month periods (S5 Figure)
+fmt_day <- \(d) str_c(day(d), " ", month.abb[month(d)], " ", year(d))
+panel_f <-
+  bimonthly |>
+  transmute(
+    Zone = zone, Dates = str_c(fmt_day(period_start), "–", fmt_day(period_end)),
+    `Health areas` = areas_included,
+    `Working trap-nights` = working_trap_nights,
+    `Anopheles caught (working traps)` = anopheles_working_traps,
+    `Mosquitoes tested` = mosquitoes_tested, Positive = sporozoite_positives,
+    `Sporozoite rate pooled, % (95% CI)` = fmt_est_ci_sf(sporozoite_rate_pooled, sporozoite_lcl, sporozoite_ucl, digits = 1, scale = 100, sf_rule = FALSE),
+    `HBR per occupant-night (95% CI)` = fmt_est_ci_sf(hbr_per_occupant, hbr_per_occupant_lcl, hbr_per_occupant_ucl, digits = 2),
+    `EIR per occupant, infective bites per month (95% CI)` = fmt_est_ci_sf(eir_per_occupant_month, eir_per_occupant_month_lcl, eir_per_occupant_month_ucl, digits = 2)
+  )
+
 read_me <- c(
-  "S5 Table. Entomological surveillance by zone, health area, and period, Angumu health zone, Democratic Republic of Congo, May 2022 to November 2024.",
-  "Sheets A to C: A = the three zones, B = the MDA+IRS zone divided into Gengere and the other four health areas, C = each health area, by half-year period (P1 to P5); sheet C also gives each area's estimated HBR ratio for P5 against P1. Sheets D = sensitivity analyses (500 bootstrap resamples; Table 5 uses 2,000): estimates, change contrasts, and a negative-binomial model check of the HBR contrasts. Sheet E = May and June 2022 (P0), before and at the start of IRS round 1: descriptives, between-zone ratios at P0, and the change in estimated HBR, density and HBR per occupant-night from P1 to P5 (2,000 bootstrap resamples).",
+  "S5 Table. Entomological surveillance by zone, health area, and period, Angumu health zone, Democratic Republic of the Congo, May 2022 to November 2024.",
+  "Sheets A to C: A = the three zones, B = the MDA+IRS zone divided into Gengere and the other four health areas, C = each health area, by half-year period (P1 to P5); sheet C also gives each area's estimated HBR per occupant-night ratio for P5 against P1. Sheets D = sensitivity analyses (500 bootstrap resamples; Table 3 uses 2,000): estimates, change contrasts, a negative-binomial model check, and a likelihood-ratio test of area-specific against common change from P1 to P3 within each zone of the HBR contrasts. Sheet E = May and June 2022 (P0), before and at the start of IRS round 1: descriptives, between-zone ratios at P0, and the change in estimated HBR, density and HBR per occupant-night from P1 to P5 (2,000 bootstrap resamples). Sheet F = each zone by the protocol's 2-month reporting period, May 2022 to November 2024 (November 2024 alone), with zones as treated by month (2,000 bootstrap resamples); sporozoite rate and EIR from January 2023, where at least 10 mosquitoes were tested.",
   "Pooled sporozoite rate = positive mosquitoes / mosquitoes tested, with an exact 95% CI; the population-weighted rate weights each health area by its population and so up-weights health areas with few tested mosquitoes (MDA+IRS, January to June 2024: pooled 1.8%, population-weighted 7.2%).",
-  str_c("HBR, estimated human biting rate: Anopheles per working trap-night in CDC light traps (not a human landing catch); per occupant-night, the catch divided by household members. EIR: estimated HBR x sporozoite rate x 365, in ", eir_label, "; per occupant, infective bites per year. Density: Anopheles per working trap-night in randomly selected houses."),
+  str_c("HBR, estimated human biting rate: Anopheles caught in CDC light traps (not a human landing catch) per occupant-night, the catch divided by household members, and, alongside, per working trap-night. EIR: estimated HBR x sporozoite rate x 365 / 12, per occupant in infective bites per month (the half-year estimate expressed as a monthly average), and alongside in ", eir_label, ". Density: Anopheles per working trap-night in randomly selected houses."),
   "Ratios, rates and entomological indices are given to two significant figures, estimate and interval alike, when the upper limit is more than 10 times the lower; percentages are not.",
   "Panel C rows marked with a dagger had fewer than three trapped months and are outside the zone estimate. P0 runs from 1 May to 30 June 2022; trapping began on 31 May 2022 and IRS round 1 began on 27 June 2022.",
-  "[CONFIRM (Arnaud): how mosquitoes were chosen for sporozoite testing; re-dated and held-out trap-nights; trap-night, catch, tested and positive totals are provisional.]"
+  "Mosquitoes for sporozoite testing were drawn at random within each trap-week collection, following the field standard operating procedure; where catches were large, mainly in Gengere, only part of the catch was tested (Additional file 1: S1 Text, section 6.3). Re-dated and excluded trap-nights are described in S1 Text, section 6.2."
 )
 
 wb <- createWorkbook()
@@ -1056,6 +1195,7 @@ add_table_sheet("C health areas", panel_c)
 add_table_sheet("D sensitivity", panel_d_sens, widths = c(46, 46, 12, 8, 24))
 add_table_sheet("D contrasts", panel_d_contrasts, widths = c(46, 38, 46, 12, 8, 12, 22))
 add_table_sheet("D model check", panel_d_check, widths = c(40, 38, 12, 8, 22))
+add_table_sheet("D heterogeneity", panel_d_het, widths = c(12, 14, 14, 6, 10))
 
 # Sheet E: three titled blocks on one sheet
 sheet_e <- "E P0 May-Jun 2022"
@@ -1072,4 +1212,219 @@ write_block("E2. Between-zone ratios at P0 (2,000 bootstrap resamples)", p0_rati
 write_block(str_c("E3. Ratio of the zone mean in P5 (", p5_dates, ") to that in P1 (", p1_dates, "), within each zone, then each intervention zone's ratio relative to Routine's ratio (2,000 bootstrap resamples)"), change_ratios)
 setColWidths(wb, sheet_e, cols = 1:14, widths = c(24, 44, 16, 26, 10, 10, 14, 16, 16, 14, 10, 22, 22, 22))
 
+add_table_sheet("F 2-month periods", panel_f, widths = c(10, 30, 40, 12, 14, 12, 10, 24, 24, 24))
+
 saveWorkbook(wb, "output/tables/s5_table_entomology.xlsx", overwrite = TRUE)
+
+# S12 Table ----
+
+# Residual efficacy of IRS round 2 (clothianidin): WHO cone bioassays on one sprayed wall in each of four
+# mud-walled houses in Panyadong (IRS zone) and four plastic-sheeting shelters in Gengere camp (MDA+IRS
+# zone), monthly visits 1 to 9 after the round; 12 exposed and 4 control cones per test. Mortality is read
+# at 72 hours (clothianidin acts slowly); a test without a 72-hour reading falls back to 24 hours, is
+# flagged and is not judged against the threshold. Control mortality above 20% invalidates a test;
+# Abbott's correction is applied throughout; 80% corrected mortality is the threshold for effective
+# residual activity. Two cones record one fewer dead at 72 h than at 24 h (transcription slips, kept).
+cones <- read_rds("data/cone_bioassay.rds")
+stopifnot(n_distinct(cones$sheet) == 18, sum(cones$dead_72h < cones$dead_24h, na.rm = TRUE) <= 2)
+
+cone_tests <-
+  cones |>
+  mutate(arm = if_else(str_detect(condition, "contr"), "control", "exposed")) |>
+  summarise(
+    location = first(location), surface = first(surface), date_cell = first(date_cell), days_since_spray = first(days_since_spray),
+    has_72h = all(!is.na(dead_72h)), n = sum(exposed), dead_24 = sum(dead_24h), dead_72 = sum(dead_72h),
+    .by = c(sheet, arm)
+  ) |>
+  mutate(dead = if_else(has_72h, dead_72, dead_24)) |>
+  select(sheet, location, surface, date_cell, days_since_spray, arm, has_72h, n, dead) |>
+  pivot_wider(names_from = arm, values_from = c(n, dead, has_72h)) |>
+  mutate(
+    site = if_else(str_starts(sheet, "Panyadong"), "Panyadong (IRS zone)", "Gengere 1 camp (MDA+IRS zone)"),
+    wall = if_else(str_starts(sheet, "Panyadong"), "Mud", "Plastic sheeting"),
+    visit = as.integer(str_extract(sheet, "(?<= v)[1-9]")),
+    date = dmy(str_extract(sheet, "[0-9]{2}\\.[0-9]{2}\\.[0-9]{4}")),
+    reading = if_else(has_72h_exposed & has_72h_control, "72 h", "24 h"),
+    mortality_exposed = dead_exposed / n_exposed,
+    mortality_control = dead_control / n_control,
+    mortality_corrected = (mortality_exposed - mortality_control) / (1 - mortality_control),
+    valid = mortality_control <= 0.20,
+    at_least_80 = if_else(reading == "72 h", valid & mortality_corrected >= 0.80, NA)
+  ) |>
+  arrange(wall, visit)
+stopifnot(
+  all(cone_tests$has_72h_exposed == cone_tests$has_72h_control),
+  !anyDuplicated(cone_tests[c("wall", "visit")]),
+  all(is.na(cone_tests$date_cell) | abs(as.numeric(cone_tests$date - cone_tests$date_cell)) <= 7)
+)
+
+s12_table <-
+  cone_tests |>
+  transmute(
+    site, wall, visit, date, days_since_spray, reading,
+    exposed = n_exposed, dead_exposed, control = n_control, dead_control,
+    mortality_exposed_pct = round(100 * mortality_exposed, 1),
+    mortality_control_pct = round(100 * mortality_control, 1),
+    mortality_corrected_pct = round(100 * mortality_corrected, 1),
+    valid, at_least_80
+  )
+print(s12_table, n = Inf, width = Inf)
+write_csv(s12_table, "output/tables/s12_table_cone_bioassay.csv")
+
+# S1 Text: selection weighting of the sporozoite rate ----
+
+# Mosquitoes were drawn for sporozoite testing at random within each trap-week bag (one trap at one site
+# in one calendar week), so a tested mosquito stands for caught / tested mosquitoes of its trap-week.
+# Weighted pooled rate per zone x half-year from January 2023: sum over trap-weeks of caught x positive /
+# tested, over the catch of trap-weeks with at least one tested; the unweighted pooled rate is Table 3's.
+# Catch counts every mosquito row of the trap-week (non-working traps included, as the sporozoite
+# denominator). Same thin-cell rule as Table 3. Bootstrap: sites resampled within health area, 2,000
+# resamples, percentile CIs.
+thin_cells_sr <-
+  ento_trapnights |>
+  filter(!is.na(zone), !is.na(period), working, !is.na(n_anoph)) |>
+  summarise(n_months = n_distinct(month), .by = c(area, zone, period)) |>
+  filter(n_months < 3, period != "P0")
+
+mq_w <-
+  ento_mosq |>
+  filter(date >= ento_spz_start, !is.na(zone), !is.na(period)) |>
+  anti_join(thin_cells_sr, by = c("area", "zone", "period")) |>
+  left_join(ento_trapnights |> select(tn_index, trap_no), by = "tn_index") |>
+  mutate(
+    is_tested = tested %in% TRUE,
+    is_pos = is_tested & spz_result %in% "Positive",
+    wk = floor_date(date, "week", week_start = 1),
+    tw_key = paste(area, site_id, trap_no, wk, sep = "|"),
+    tw_key_house = paste(area, site_id, trap_no, house_id, wk, sep = "|")
+  )
+stopifnot(!anyNA(mq_w$trap_no))
+
+build_tw <- function(mq, key) {
+  mq |>
+    summarise(c = n(), t = sum(is_tested), p = sum(is_pos), .by = c(all_of(key), area, site_id, zone, period)) |>
+    rename(tw_key = all_of(key)) |>
+    mutate(num = if_else(t > 0, c * p / t, 0), den = if_else(t > 0, c, 0))
+}
+tw <- build_tw(mq_w, "tw_key")
+
+cells_w <- tw |> distinct(zone, period) |> arrange(match(zone, zone_display_levels), period) |> mutate(cell = paste(zone, period, sep = "|"))
+sites_w <- tw |> distinct(area, site_id) |> arrange(area, site_id)
+area_site_idx <- split(seq_len(nrow(sites_w)), sites_w$area)
+
+sr_weighted <- function(tw, mult = rep(1, nrow(sites_w))) {
+  m <- mult[match(paste(tw$area, tw$site_id), paste(sites_w$area, sites_w$site_id))]
+  ci <- factor(paste(tw$zone, tw$period, sep = "|"), levels = cells_w$cell)
+  s <- rowsum(cbind(tw$t, tw$p, tw$num, tw$den) * m, ci, reorder = TRUE)[cells_w$cell, , drop = FALSE]
+  cbind(pooled_unw = if_else(s[, 1] > 0, s[, 2] / s[, 1], NA_real_), pooled_w = if_else(s[, 4] > 0, s[, 3] / s[, 4], NA_real_))
+}
+point_w <- sr_weighted(tw)
+t3_sr <- table3_full |> mutate(cell = paste(if_else(zone == "MDA+IRS", "MDA", zone), period, sep = "|"))
+stopifnot(isTRUE(all.equal(unname(point_w[, "pooled_unw"]), t3_sr$sporozoite_rate_pooled[match(cells_w$cell, t3_sr$cell)])))
+
+set.seed(20261007)
+boot_w <- matrix(NA_real_, 2000, nrow(cells_w))
+for (b in 1:2000) {
+  mult <- numeric(nrow(sites_w))
+  for (idx in area_site_idx) mult[idx] <- tabulate(sample.int(length(idx), length(idx), replace = TRUE), nbins = length(idx))
+  boot_w[b, ] <- sr_weighted(tw, mult)[, "pooled_w"]
+}
+boot_w[!is.finite(boot_w)] <- NA_real_
+boot_q_w <- \(x, p) if (sum(!is.na(x)) < 0.9 * 2000) NA_real_ else quantile(x, p, na.rm = TRUE, names = FALSE)
+
+# Sensitivity variants of the weights (point estimates): trap-week key that adds the house, weights capped
+# at 10, and the five trap-weeks carrying most weight in each cell left out
+top5 <- tw |> filter(t > 0) |> slice_max(c, n = 5, by = c(zone, period), with_ties = FALSE)
+sr_variants <- list(
+  house_key = build_tw(mq_w, "tw_key_house"),
+  capped_10 = tw |> mutate(num = if_else(t > 0, pmin(c / t, 10) * p, 0), den = if_else(t > 0, pmin(c / t, 10) * t, 0)),
+  top5_left_out = anti_join(tw, top5, by = "tw_key")
+)
+
+cell_totals <- tw |> summarise(tested = sum(t), positives = sum(p), caught = sum(c), .by = c(zone, period))
+sr_weighting <-
+  cells_w |>
+  left_join(cell_totals, by = c("zone", "period")) |>
+  transmute(
+    zone = as.character(zone_display(zone)), period, tested, positives, caught,
+    pooled_unw = point_w[, "pooled_unw"],
+    pooled_lcl = exact_lcl(positives, tested), pooled_ucl = exact_ucl(positives, tested),
+    pooled_w = point_w[, "pooled_w"],
+    pooled_w_lcl = apply(boot_w, 2, boot_q_w, p = 0.025), pooled_w_ucl = apply(boot_w, 2, boot_q_w, p = 0.975),
+    diff_pp = 100 * (pooled_w - pooled_unw),
+    w_house_key = sr_weighted(sr_variants$house_key)[, "pooled_w"],
+    w_capped_10 = sr_weighted(sr_variants$capped_10)[, "pooled_w"],
+    w_top5_left_out = sr_weighted(sr_variants$top5_left_out)[, "pooled_w"]
+  ) |>
+  arrange(period, match(zone, unname(zone_display_labels[zone_display_levels])))
+print(sr_weighting, n = Inf, width = Inf)
+write_csv(sr_weighting, "output/tables/s1_text_sr_selection_weighting.csv")
+
+# Share of the Anopheles caught in Gengere that were tested, by half-year
+tw |>
+  filter(area == "Gengere") |>
+  summarise(tested = sum(t), caught = sum(c), .by = period) |>
+  mutate(tested_pct = 100 * tested / caught) |>
+  arrange(period) |>
+  print()
+
+# S1 Text: EIR from monthly values ----
+
+# EIR per occupant-night from monthly HBR and sporozoite rate in each health area (a month with no tested
+# mosquito takes the area's half-year rate), averaged over the half-year with days as weights and then
+# over the zone with population weights, against the reported EIR (half-year HBR x half-year rate).
+# Half-years P2 to P5, Table 3's thin-cell rule; point estimates.
+am <-
+  full_join(
+    ento_trapnights |>
+      filter(!is.na(zone), !is.na(period), working, !is.na(n_anoph)) |>
+      summarise(anoph_p = sum(n_anoph[!is.na(persons)]), pnights = sum(persons, na.rm = TRUE), .by = c(area, zone, period, month)),
+    ento_mosq |>
+      filter(!is.na(zone), !is.na(period)) |>
+      summarise(n_tested = sum(tested %in% TRUE), n_pos = sum(tested %in% TRUE & spz_result %in% "Positive"), .by = c(area, zone, period, month)),
+    by = c("area", "zone", "period", "month")
+  ) |>
+  mutate(across(c(anoph_p, pnights, n_tested, n_pos), \(x) replace_na(x, 0))) |>
+  anti_join(thin_cells_sr, by = c("area", "zone", "period")) |>
+  filter(period %in% c("P2", "P3", "P4", "P5"))
+
+ratio_or_na <- \(a, b) if_else(b > 0, a / b, NA_real_)
+eir_monthly <-
+  am |>
+  mutate(
+    hbr_p = ratio_or_na(sum(anoph_p), sum(pnights)), sr_p = ratio_or_na(sum(n_pos), sum(n_tested)),
+    .by = c(area, zone, period)
+  ) |>
+  mutate(
+    hbr_m = ratio_or_na(anoph_p, pnights),
+    sr_m = ratio_or_na(n_pos, n_tested),
+    eir_m = 365 * hbr_m * if_else(is.na(sr_m), sr_p, sr_m),
+    days = days_in_month(month)
+  ) |>
+  summarise(
+    eir_period = first(365 * hbr_p * sr_p),
+    eir_monthly = ratio_or_na(sum(days[!is.na(eir_m)] * eir_m[!is.na(eir_m)]), sum(days[!is.na(eir_m)])),
+    .by = c(area, zone, period)
+  ) |>
+  left_join(ento_pop, by = "area") |>
+  summarise(
+    eir_reported = sum((pop * eir_period)[!is.na(eir_period)]) / sum(pop[!is.na(eir_period)]),
+    eir_monthly_averaged = sum((pop * eir_monthly)[!is.na(eir_monthly)]) / sum(pop[!is.na(eir_monthly)]),
+    .by = c(zone, period)
+  ) |>
+  mutate(
+    ratio = eir_monthly_averaged / eir_reported,
+    rank_reported = rank(-eir_reported), rank_monthly = rank(-eir_monthly_averaged), .by = period
+  ) |>
+  mutate(zone = as.character(zone_display(zone)), across(c(eir_reported, eir_monthly_averaged), \(x) x / 12, .names = "{.col}_per_month")) |>
+  arrange(period, match(zone, unname(zone_display_labels[zone_display_levels])))
+t3_eir <- table3_full |> select(zone, period, eir_per_occupant_annual)
+eir_check <- eir_monthly$eir_reported / t3_eir$eir_per_occupant_annual[match(paste(eir_monthly$zone, eir_monthly$period), paste(t3_eir$zone, t3_eir$period))]
+message("Reported EIR rebuilt from monthly rows / Table 3 EIR: ", str_c(signif(eir_check, 8), collapse = ", "))
+stopifnot(all(abs(eir_check - 1) < 1e-6))
+print(eir_monthly, width = Inf)
+write_csv(eir_monthly, "output/tables/s1_text_eir_monthly_average.csv")
+message(
+  "Monthly-averaged EIR within 15% of the reported EIR in ", sum(abs(eir_monthly$ratio - 1) <= 0.15), " of ", nrow(eir_monthly),
+  " zone-half-years; same zone order in every half-year: ", all(eir_monthly$rank_reported == eir_monthly$rank_monthly)
+)

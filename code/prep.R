@@ -1,9 +1,9 @@
 # Builds the de-identified analysis files in data/ (df_ind.rds, df_hh.rds,
-# entomology_*.rds, pnlp_health_area_monthly.rds, dhis2_monthly.rds,
-# climate_weekly.rds and the map layers in data/maps/) from the study team's
-# internal data store: the Kobo survey snapshots, the PNLP and DHIS2
-# surveillance exports and the entomology workbooks. It cannot be run outside
-# that store; it is included to document how the files used by the analysis
+# entomology_*.rds, cone_bioassay.rds, pnlp_health_area_monthly.rds,
+# dhis2_monthly.rds, climate_weekly.rds and the map layers in data/maps/) from
+# the study team's internal data store: the Kobo survey snapshots, the PNLP and
+# DHIS2 surveillance exports, the entomology workbooks and the cone-bioassay
+# forms. It cannot be run outside that store; it is included to document how the files used by the analysis
 # scripts are derived. It runs from the root of the study team's project and
 # sources that project's per-round survey preparation scripts, which clean each
 # round and assign the as-treated zone. Names and device, submission and
@@ -172,11 +172,12 @@ write_rds(df_ind, file.path(out_dir, "df_ind.rds"))
 write_rds(df_hh, file.path(out_dir, "df_hh.rds"))
 
 # Entomology ----
-# The preparation script cleans the trap-night and mosquito sheets and audits
-# the cleaning; its own file writes are not wanted here.
+# The preparation script (code/entomology_prep.R in this repository) cleans the
+# trap-night and mosquito sheets and audits the cleaning; its own file writes
+# are not wanted here.
 ento_env <- new.env()
 ento_env$write_csv <- ento_env$write_rds <- \(...) invisible(NULL)
-source("code/report/manuscript/entomology_prep.R", local = ento_env)
+source("../malaria-angumu-2024/code/entomology_prep.R", local = ento_env)
 
 # Trap-nights and mosquitoes are linked on the sheet index, which is recoded.
 tn_keys <- ento_env$ento_trapnights$tn_index
@@ -188,6 +189,33 @@ ento_env$ento_mosq |>
   select(-code_beem) |>
   write_rds(file.path(out_dir, "entomology_mosquitoes.rds"))
 write_rds(ento_env$ento_audit, file.path(out_dir, "entomology_audit.rds"))
+
+# Cone bioassays after IRS round 2 ----
+# One WHO cone-test form per sheet; only the cone rows are kept (no
+# investigator names). Kept: Panyadong and Gengere 1, visits 1 to 9 after the
+# second round; dropped: the three February-March 2023 tests (other sites,
+# before the round) and the Panyadong visit 8 test the field team marked
+# invalid (repeated on 3 November 2023).
+cone_xlsx <- "data/misc/entomology/cone_test_irs_round2_angumu_2023.xlsx"
+cone_num <- \(x) suppressWarnings(as.numeric(x))
+read_cone_test <- function(sheet) {
+  d <- as.data.frame(readxl::read_excel(cone_xlsx, sheet, col_names = FALSE, .name_repair = "minimal"))
+  names(d) <- str_c("c", seq_along(d))
+  field <- \(lbl) d$c2[grep(lbl, d$c1, ignore.case = TRUE)[1]]
+  hdr <- grep("^Cone Number", d$c1)[1]
+  cones <- d[(hdr + 1):nrow(d), ] |> filter(str_detect(str_to_lower(c2), "expos|contr"), !is.na(cone_num(c4)))
+  tibble(
+    sheet, location = field("^Location"), surface = field("Surface"),
+    date_cell = as.Date(cone_num(field("^Date$")), origin = "1899-12-30"),
+    days_since_spray = cone_num(field("Duration Since")),
+    condition = str_to_lower(cones$c2), exposed = cone_num(cones$c4), dead_24h = cone_num(cones$c5), dead_72h = cone_num(cones$c7)
+  )
+}
+cone_sheets <- readxl::excel_sheets(cone_xlsx) |> str_subset("^(Panyadong|Gengere1) v[1-9] ") |> str_subset("invalid", negate = TRUE)
+stopifnot(length(cone_sheets) == 18)
+map(cone_sheets, read_cone_test) |>
+  list_rbind() |>
+  write_rds(file.path(out_dir, "cone_bioassay.rds"))
 
 # Routine surveillance ----
 source("code/misc/surveillance_zones.R")

@@ -6,14 +6,14 @@ The scripts reproduce the tables, figures and in-text results of the manuscript 
 
 | Script | Reproduces |
 |---|---|
-| `code/01_study_design.R` | Figure 1 (study area), Figure 2 (timeline and zone classification), S1 Table (baseline characteristics), S4 Table (clusters and households), S7 Table (participants by survey), S8 Table (MDA and IRS coverage) |
-| `code/02_prevalence.R` | Table 1 (malaria prevalence by zone), Figure 3 (prevalence trend), Figure 4 (prevalence maps), S6 Table (Gengere), S9 Table and S4 Figure (prevalence by health area) |
-| `code/03_prevalence_sensitivity.R` | S2 Table, panels A to G (ratio of ORs versus survey 1, Awasi-only comparator, health-area random intercept, area-level permutation test, MDA+IRS compared with IRS, E-values, net-adjusted prevalence), S12 Table (bed-net use) |
-| `code/04_mortality.R` | Table 2 (under-five and crude mortality), S2 Figure (crude mortality rates), S3 Table, panels A to E, S10 Table (household-reported cause of death) |
-| `code/05_entomology.R` | Table 3 (entomological indicators), Figure 5 (human biting rate by health area), S3 Figure (monthly entomological indicators), S5 Table (Additional file 2) |
-| `code/06_facility_surveillance.R` | Figure 6 (facility test positivity rate against survey prevalence), S1 Figure (monthly facility test positivity rate), S11 Table |
+| `code/01_study_design.R` | Figure 1 (study area), Figure 2 (timeline and zone classification), S1 Table (baseline characteristics), S4 Table (clusters and households), S6 Table (participants by survey), S7 Table (MDA and IRS coverage) |
+| `code/02_prevalence.R` | Table 1 (malaria prevalence by zone), Figure 3 (prevalence trend), Figure 4 (prevalence maps), S8 Table and S4 Figure (prevalence by health area) |
+| `code/03_prevalence_sensitivity.R` | S2 Table, panels A to H (ratio of ORs versus survey 1, Awasi-only comparator, health-area random intercept, area-level permutation test, MDA+IRS compared with IRS, E-values, net-adjusted prevalence, Gengere as its own stratum), S11 Table (bed-net use) |
+| `code/04_mortality.R` | Table 2 (under-five and crude mortality), S2 Figure (crude mortality rates), S3 Table, panels A to F, S9 Table (household-reported cause of death) |
+| `code/05_entomology.R` | Table 3 (entomological indicators), Figure 5 (human biting rate by health area and quarterly sporozoite rate), S3 Figure (monthly entomological indicators), S5 Figure (2-month periods), S12 Table (cone bioassays after IRS round 2), S5 Table (Additional file 2), and the selection-weighted sporozoite rate and monthly-averaged EIR quoted in S1 Text |
+| `code/06_facility_surveillance.R` | Figure 6 (facility test positivity rate against survey prevalence), S1 Figure (monthly facility test positivity rate), S10 Table |
 
-`code/functions.R` holds helpers shared by the scripts. `code/prep.R` documents how the input files are built from the study team's internal data store; it cannot be run outside that store.
+`code/functions.R` holds helpers shared by the scripts. `code/prep.R` documents how the input files are built from the study team's internal data store; it cannot be run outside that store. `code/entomology_prep.R`, sourced by `prep.R`, holds the cleaning and audit steps applied to the entomology workbooks.
 
 ## Running
 
@@ -28,7 +28,7 @@ Rscript code/05_entomology.R
 Rscript code/06_facility_surveillance.R
 ```
 
-`03_prevalence_sensitivity.R` reads the model saved by `02_prevalence.R`, which takes about 50 minutes. For the net-adjusted prevalence models (S2 Table G) and the all-age mortality models, the optimiser was chosen by an `lme4::allFit()` search; the scripts fit the chosen optimiser directly. Figure 2 downloads the Inter font from Google Fonts.
+`03_prevalence_sensitivity.R` reads the model saved by `02_prevalence.R`, which takes about 50 minutes; its own Gengere-stratum models (S2 Table H) take a similar time. For the net-adjusted prevalence models (S2 Table G) and the all-age mortality models (including S3 Table F), the optimiser was chosen by an `lme4::allFit()` search, and for the Gengere-stratum prevalence models (S2 Table H) by comparing bobyqa, Nelder_Mead and nlminbwrap; the scripts fit the chosen optimiser directly. Figure 2 downloads the Inter font from Google Fonts.
 
 ## Inputs
 
@@ -37,6 +37,7 @@ Not included (see Data access below):
 - `data/df_ind.rds`: one row per listed household member, surveys 1 to 5, with survey, cluster, household and health area codes, zone, age, sex, displacement status, survey weight, malaria rapid diagnostic test result, bed-net use, MDA and IRS receipt, death, cause of death and person-time (surveys 1, 3 and 5), and household location.
 - `data/df_hh.rds`: one row per visited household, with consent and interview date.
 - `data/entomology_trapnights.rds`, `data/entomology_mosquitoes.rds`: CDC light-trap nights and the Anopheles caught, with species and sporozoite results.
+- `data/cone_bioassay.rds`: one row per cone of the WHO cone bioassays after IRS round 2 (Panyadong and Gengere camp, visits 1 to 9), with exposed and control mosquitoes and deaths at 24 and 72 hours.
 - `data/pnlp_health_area_monthly.rds`, `data/dhis2_monthly.rds`: monthly routine malaria indicators by health area (PNLP and DHIS2).
 - `data/climate_weekly.rds`: weekly rainfall and temperature for the health zone (PNLP).
 - `data/maps/health_areas.rds`: MSF health-area boundaries against which survey clusters were sampled, used for Figure 4.

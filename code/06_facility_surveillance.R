@@ -1,5 +1,5 @@
 # Routine facility surveillance: Figure 6 (facility TPR against survey malaria prevalence), S1 Figure
-# (monthly facility TPR and survey prevalence by zone), S11 Table (monthly TPR by zone) and the
+# (monthly facility TPR and survey prevalence by zone), S10 Table (monthly TPR by zone) and the
 # concordance numbers quoted in the Results and S1 Text.
 
 pacman::p_load(srvyr, survey, ggforce, patchwork, scales, tidyverse)
@@ -179,7 +179,7 @@ survey_prev |>
   arrange(survey, zone) |>
   print(n = Inf)
 
-# S11 Table ----
+# S10 Table ----
 
 n_areas_tdr <-
   df_pnlp |>
@@ -197,7 +197,7 @@ tpr_monthly <-
 
 zone_names <- as.character(zone_display(zone_display_levels))
 
-s11_table <-
+s10_table <-
   tpr_monthly |>
   mutate(month = format(date, "%Y-%m"), tpr_pct = round(tpr_pct, 1)) |>
   pivot_wider(
@@ -209,9 +209,9 @@ s11_table <-
   rename_with(\(x) str_replace(x, " n_areas$", " health areas (n)"))
 
 # TPR is written as text so that a value such as 78.0 keeps its decimal
-s11_table |>
+s10_table |>
   mutate(across(ends_with("TPR (%)"), \(x) sprintf("%.1f", x))) |>
-  write_csv("output/tables/s11_table_tpr_monthly_by_zone.csv")
+  write_csv("output/tables/s10_table_tpr_monthly_by_zone.csv")
 
 # Figure 6 ----
 

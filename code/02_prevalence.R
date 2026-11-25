@@ -1,6 +1,6 @@
 # Malaria prevalence by zone: the pooled baseline-adjusted model and its within-survey contrasts.
 # Reproduces Table 1 (prevalence by zone), Figure 3 (prevalence trend), Figure 4 (prevalence maps),
-# S4 Figure and S9 Table (prevalence by health area) and S6 Table (Gengere).
+# S4 Figure and S8 Table (prevalence by health area).
 
 pacman::p_load(lme4, emmeans, srvyr, survey, sf, spatstat, mgcv, nngeo, stars, ggnewscale, ggrepel, patchwork, tidyverse)
 
@@ -167,27 +167,26 @@ write_csv(table1, "output/tables/table1_prevalence.csv")
 
 # Figure 3 ----
 
-zone_facet_labels <- c(Routine = "Routine", IRS = "IRS", MDA = "MDA+IRS")
+# One panel, so that the zones are read on a shared axis: dodged points with 95% CI bars
+dodge <- position_dodge(width = 1.2)
 
 figure3 <-
   crude_prev |>
   left_join(season_lu, by = "survey_n") |>
   mutate(zone = factor(zone, levels = zone_display_levels)) |>
-  ggplot(aes(x = months_from_baseline, y = prev * 100, colour = zone, fill = zone)) +
+  ggplot(aes(x = months_from_baseline, y = prev * 100, colour = zone, group = zone)) +
   geom_vline(xintercept = 0, linetype = "dotted", colour = "grey50") +
-  geom_ribbon(aes(ymin = lcl * 100, ymax = ucl * 100), alpha = 0.2, colour = NA) +
-  geom_line(linewidth = 0.8) +
-  geom_point(aes(shape = season), size = 3) +
+  geom_line(linewidth = 0.8, position = dodge) +
+  geom_linerange(aes(ymin = lcl * 100, ymax = ucl * 100), linewidth = 0.7, position = dodge) +
+  geom_point(aes(shape = season), size = 3, fill = "white", stroke = 1.1, position = dodge) +
   scale_shape_manual(values = c("Low transmission" = 16, "High transmission" = 4)) +
-  scale_colour_manual(values = zone_cols) +
-  scale_fill_manual(values = zone_cols) +
+  scale_colour_manual(values = zone_cols, labels = zone_display_labels) +
   scale_x_continuous(breaks = survey_timing$months_from_baseline) +
   scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.05))) +
-  facet_wrap(~zone, nrow = 1, labeller = labeller(zone = zone_facet_labels)) +
-  labs(x = "Months from baseline", y = "Malaria prevalence (%)", shape = "Preceding season") +
-  guides(colour = "none", fill = "none") +
+  labs(x = "Months from baseline", y = "Malaria prevalence (%)", colour = "Zone", shape = "Preceding season") +
+  guides(colour = guide_legend(order = 1), shape = guide_legend(order = 2)) +
   theme_bw(base_size = 12) +
-  theme(panel.grid.minor = element_blank(), strip.text = element_text(face = "bold"), legend.position = "bottom")
+  theme(panel.grid.minor = element_blank(), legend.position = "bottom", legend.box = "vertical")
 
 ggsave("output/figures/figure3_prevalence_trend.png", figure3, width = 9, height = 6, dpi = 300)
 
@@ -321,65 +320,7 @@ figure4 <-
 
 ggsave("output/figures/figure4_prevalence_maps.png", figure4, width = 15, height = 9, dpi = 300)
 
-# S6 Table ----
-
-# Gengere supplies most MDA+IRS mosquitoes: prevalence in Gengere and in the other four MDA+IRS areas
-dat_prev <-
-  dat_rdt |>
-  mutate(
-    survey_n = as.integer(as.character(survey)),
-    group = case_when(zone == "MDA" & area == "Gengere" ~ "Gengere", zone == "MDA" ~ "Other four MDA+IRS areas", .default = NA_character_)
-  )
-
-# Zone rows as in Table 1 (one design per survey, grouped by zone); area groups each in their own design
-zone_est <-
-  dat_prev |>
-  group_split(survey_n) |>
-  map(\(d) {
-    d |>
-      as_survey(ids = cluster, strata = zone, weights = weight) |>
-      group_by(zone) |>
-      summarise(prop = survey_mean(outcome_rdt * 100, vartype = "ci", deff = TRUE)) |>
-      mutate(survey = d$survey_n[1], group = as.character(zone_display(zone)), row_type = "zone (context)")
-  }) |>
-  list_rbind() |>
-  select(survey, row_type, group, prop, prop_low, prop_upp, prop_deff)
-
-area_est <-
-  dat_prev |>
-  filter(zone == "MDA") |>
-  group_split(survey_n, group) |>
-  map(\(d) {
-    est <- calculate_prop(d |> mutate(zone = droplevels(zone)), key = rdt_result, value = "Positif")
-    tibble(survey = d$survey_n[1], row_type = "MDA+IRS area group", group = d$group[1], prop = est$prop, prop_low = est$prop_low, prop_upp = est$prop_upp, prop_deff = est$prop_deff)
-  }) |>
-  list_rbind()
-
-dat_groups <- bind_rows(
-  dat_prev |> filter(zone == "MDA") |> mutate(row_type = "MDA+IRS area group"),
-  dat_prev |> mutate(group = as.character(zone_display(zone)), row_type = "zone (context)")
-)
-
-s6_table <-
-  dat_groups |>
-  mutate(survey = survey_n) |>
-  summarise(
-    areas = str_c(sort(unique(area)), collapse = ", "), n_clusters = n_distinct(cluster), n_tested = n(), n_positive = sum(outcome_rdt),
-    .by = c(survey, row_type, group)
-  ) |>
-  left_join(bind_rows(zone_est, area_est), by = c("survey", "row_type", "group")) |>
-  mutate(unweighted_pct = 100 * n_positive / n_tested) |>
-  rename(prevalence_pct = prop, lcl_pct = prop_low, ucl_pct = prop_upp, deff = prop_deff) |>
-  left_join(survey_timing |> select(survey = survey_n, months_from_baseline), by = "survey") |>
-  mutate(group = factor(group, levels = c("Gengere", "Other four MDA+IRS areas", "Routine", "MDA+IRS", "IRS"))) |>
-  arrange(survey, match(row_type, c("MDA+IRS area group", "zone (context)")), group) |>
-  mutate(group = as.character(group)) |>
-  select(survey, months_from_baseline, row_type, group, areas, n_clusters, n_tested, n_positive, prevalence_pct, lcl_pct, ucl_pct, unweighted_pct, deff)
-
-print(s6_table, n = Inf, width = Inf)
-write_csv(s6_table, "output/tables/s6_table_gengere_prevalence.csv")
-
-# S9 Table and S4 Figure ----
+# S8 Table and S4 Figure ----
 
 area_lookup <- study_areas |> select(area, baseline_zone, crossover_survey)
 
@@ -410,7 +351,7 @@ area_prev <-
   list_rbind()
 
 # Every area at every survey, so that excluded areas keep a row
-s9_long <-
+s8_long <-
   expand_grid(area = area_lookup$area, survey_n = 1:5) |>
   left_join(area_lookup, by = "area") |>
   left_join(area_prev, by = c("area", "survey_n")) |>
@@ -426,15 +367,15 @@ s9_long <-
   ) |>
   arrange(baseline_zone_display, area, survey_n)
 
-s9_table <-
-  s9_long |>
+s8_table <-
+  s8_long |>
   transmute(
     baseline_zone = as.character(baseline_zone_display), area, survey = survey_n, months_from_baseline, status,
     n_clusters, n_tested, n_positive, unweighted_pct, prevalence_pct, lcl_pct, ucl_pct
   )
 
-s9_wide <-
-  s9_long |>
+s8_wide <-
+  s8_long |>
   mutate(
     cell = case_when(
       status == "excluded after crossover" ~ "excluded",
@@ -448,12 +389,12 @@ s9_wide <-
   pivot_wider(names_from = survey_col, values_from = cell) |>
   mutate(baseline_zone = as.character(baseline_zone))
 
-print(s9_wide, n = Inf, width = Inf)
-write_csv(s9_table, "output/tables/s9_table_prevalence_by_area.csv", na = "")
-write_csv(s9_wide, "output/tables/s9_table_prevalence_by_area_wide.csv", na = "")
+print(s8_wide, n = Inf, width = Inf)
+write_csv(s8_table, "output/tables/s8_table_prevalence_by_area.csv", na = "")
+write_csv(s8_wide, "output/tables/s8_table_prevalence_by_area_wide.csv", na = "")
 
 # A line stops at the survey before the area's crossover
-fig_dat <- s9_long |> filter(status == "in comparison")
+fig_dat <- s8_long |> filter(status == "in comparison")
 fig_labels <- fig_dat |> slice_max(survey_n, n = 1, by = area, with_ties = FALSE)
 
 s4_figure <-

@@ -1,6 +1,6 @@
 # Study area, design and participants: Figure 1 (study-area map), Figure 2 (timeline and zone
 # grid), S1 Table (baseline characteristics by zone), S4 Table (clusters and households),
-# S7 Table (participant characteristics by survey) and S8 Table (MDA and IRS coverage).
+# S6 Table (participant characteristics by survey) and S7 Table (MDA and IRS coverage).
 
 pacman::p_load(sf, ggspatial, cowplot, rnaturalearth, ggforce, patchwork, showtext, sysfonts, gtsummary, srvyr, tidyverse)
 
@@ -227,7 +227,8 @@ interventions <-
     "MDA", "Rounds 3-4 (DHA-piperaquine)", "2023-01-01", "2023-02-28", "MDA+IRS zone",
     "IRS", "Round 2", "2023-02-02", "2023-05-31", "IRS + MDA+IRS zones",
     "Crossover", "IRS (Abia, Cawa)", "2023-08-01", "2023-09-30", "Ex-Routine → IRS",
-    "ITN", "National distribution", "2023-12-01", "2023-12-31", "All zones",
+    "ITN", "Awasi (MSF)", "2023-08-01", "2023-08-31", "Awasi",
+    "ITN", "Health-zone-wide distribution", "2023-12-01", "2023-12-31", "All zones",
     "Crossover", "MDA (Cawa, Ara, Linga)", "2024-01-01", "2024-02-29", "Ex-Routine → MDA+IRS"
   ) |>
   mutate(start = as.Date(start), end = as.Date(end))
@@ -347,7 +348,9 @@ fig_timeline <-
     axis.line.x = element_line(colour = line_baseline, linewidth = 0.4),
     axis.ticks.x = element_line(colour = line_baseline, linewidth = 0.4),
     axis.ticks.length.x = unit(1.5, "mm"),
-    plot.margin = margin(t = 10, r = 16, b = 6, l = 130)
+    # The left margin matches the grid's, so that patchwork lines up the two panels; the lane
+    # labels sit in the grid's axis gutter.
+    plot.margin = margin(t = 10, r = 16, b = 6, l = 40)
   )
 
 # Panel B: zone of each health area at each survey. Areas that crossed over have no zone
@@ -395,9 +398,14 @@ fig_zone_grid <-
     legend.position = "right"
   )
 
-# wrap_elements() makes each half one leaf, so tag_levels gives one tag per panel.
+# The panels are stacked without wrap_elements(), so that patchwork aligns their left and right
+# edges; each half is a single plot, so tag_levels gives one tag per panel. The grid legend goes
+# underneath in two rows so that it does not narrow panel B.
+fig_zone_grid <- fig_zone_grid +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE, title.position = "left")) +
+  theme(legend.position = "bottom", plot.margin = margin(t = 5.5, r = 16, b = 5.5, l = 40))
 figure2 <-
-  wrap_elements(full = fig_timeline) / wrap_elements(full = fig_zone_grid) +
+  fig_timeline / fig_zone_grid +
   plot_layout(heights = c(6.4, 5.9)) +
   plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(face = "bold", size = 16))
@@ -495,7 +503,7 @@ write_csv(s4_households, "output/tables/s4_table_households.csv")
 print(s4_clusters)
 print(s4_households)
 
-# S7 Table ----
+# S6 Table ----
 
 participant_data <-
   survey_dates |>
@@ -530,7 +538,7 @@ participant_data <-
   left_join(survey_timing |> select(survey_n, months_from_baseline) |> mutate(survey_n = as.integer(survey_n)), by = "survey_n") |>
   mutate(age_iqr = str_c(round(age_median), " (", round(age_q1), "-", round(age_q3), ")"))
 
-s7_table <-
+s6_table <-
   participant_data |>
   select(
     Survey = survey, `Months from baseline` = months_from_baseline, Dates = dates, Households = households,
@@ -538,10 +546,10 @@ s7_table <-
     `Children <5 (%)` = u5_pct, `Displaced (%)` = displaced_pct, `Malaria prevalence (%)` = rdt_positive_pct,
     `Data collected` = data_collected
   )
-write_csv(s7_table, "output/tables/s7_table_participant_characteristics.csv")
-print(s7_table, width = 200)
+write_csv(s6_table, "output/tables/s6_table_participant_characteristics.csv")
+print(s6_table, width = 200)
 
-# S8 Table ----
+# S7 Table ----
 
 coverage_row <- function(label, round, prop_tbl) {
   prop_tbl |>
@@ -586,7 +594,7 @@ tbl_irs_2 <- c("IRS", "MDA") |>
 
 zone_name <- \(z) if_else(z == "MDA", "MDA+IRS", z)
 
-s8_table <-
+s7_table <-
   bind_rows(
     coverage_row("MDA (Pyramax)", "Round 1 (Jul 2022)", tbl_mda_1),
     coverage_row("MDA (Pyramax)", "Round 2 (Aug 2022)", tbl_mda_2),
@@ -601,11 +609,11 @@ s8_table <-
   arrange(intervention, round, zone) |>
   mutate(intervention = as.character(intervention)) |>
   rename(Zone = zone, `% (95% CI)` = ci)
-write_csv(s8_table, "output/tables/s8_table_coverage.csv")
-print(s8_table, n = 20)
+write_csv(s7_table, "output/tables/s7_table_coverage.csv")
+print(s7_table, n = 20)
 
 # Households without an answer to the IRS round 1 item, for the table note.
-s8_notes <-
+s7_notes <-
   s2_pop |>
   filter(zone %in% c("IRS", "MDA")) |>
   summarise(irs_hh = first(irs_hh), area = first(area), zone = first(zone), .by = index_hh) |>
@@ -616,5 +624,5 @@ s8_notes <-
   ) |>
   mutate(zone = zone_name(zone)) |>
   arrange(desc(zone))
-write_csv(s8_notes, "output/tables/s8_table_coverage_notes.csv")
-print(s8_notes)
+write_csv(s7_notes, "output/tables/s7_table_coverage_notes.csv")
+print(s7_notes)
