@@ -1,6 +1,6 @@
-# Routine facility surveillance: Figure 6 (facility TPR against survey malaria prevalence), S1 Figure
-# (monthly facility TPR and survey prevalence by zone), S10 Table (monthly TPR by zone) and the
-# concordance numbers quoted in the Results and S1 Text.
+# Routine facility surveillance: Figure 6 (A, monthly facility TPR and survey malaria prevalence by
+# zone; B, facility TPR against survey malaria prevalence), S1 Figure (monthly facility malaria cases
+# by zone), S10 Table (monthly TPR by zone) and the concordance numbers quoted in the Results and S1 Text.
 
 pacman::p_load(srvyr, survey, ggforce, patchwork, scales, tidyverse)
 
@@ -132,9 +132,9 @@ df_zone_monthly_dhis2 <-
 start_date <- as_date("2021-10-01")
 end_date <- as_date("2024-10-01")
 
-# S1 Figure ----
+# Figure 6, panel A ----
 
-s1_fig_tpr <-
+fig6_tpr <-
   df_zone_monthly |>
   filter(date >= start_date, date <= end_date) |>
   ggplot(aes(x = date, colour = zone)) +
@@ -154,6 +154,8 @@ s1_fig_tpr <-
   theme_bw(base_size = 12) +
   theme(panel.grid.minor = element_blank(), axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "right")
 
+# S1 Figure ----
+
 s1_fig_cases <-
   df_zone_monthly |>
   filter(date >= start_date, date <= end_date) |>
@@ -162,17 +164,16 @@ s1_fig_cases <-
   mutate(case_type = fct_recode(case_type, "Suspected" = "cas_suspect", "Confirmed (RDT+)" = "tdr_positif")) |>
   ggplot(aes(x = date, y = n, colour = zone, linetype = case_type)) +
   geom_vline(xintercept = survey_dates$date, linetype = "dotted", colour = "grey60", linewidth = 0.4) +
+  annotate("text", x = survey_dates$date, y = Inf, label = survey_dates$label, vjust = 1.4, size = 3, colour = "grey40") +
   geom_line(linewidth = 0.6) +
   scale_colour_manual(values = zone_cols, breaks = zone_display_levels, labels = zone_display_labels) +
   scale_linetype_manual(values = c("Suspected" = "dashed", "Confirmed (RDT+)" = "solid")) +
   scale_x_date(limits = c(start_date, end_date), date_breaks = "6 months", date_labels = "%b %Y") +
   labs(x = NULL, y = "Cases (monthly, mean per health area)", colour = "Zone", linetype = "Case type") +
-  guides(colour = "none") +
   theme_bw(base_size = 12) +
   theme(panel.grid.minor = element_blank(), axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "right")
 
-s1_fig_monthly <- s1_fig_tpr / s1_fig_cases + plot_layout(guides = "collect", heights = c(2, 1))
-ggsave("output/figures/s1_figure_monthly_facility_tpr.png", s1_fig_monthly, width = 11, height = 9, dpi = 300)
+ggsave("output/figures/s1_figure_monthly_facility_cases.png", s1_fig_cases, width = 11, height = 4.5, dpi = 300)
 
 survey_prev |>
   transmute(survey, zone = zone_display(zone), prevalence_pct = round(prev * 100, 1)) |>
@@ -237,7 +238,7 @@ agree_lowest_n <- sum(concord_by_survey$agree_lowest)
 agree_full_n <- sum(concord_by_survey$agree_full_ranking)
 agree_n_surveys <- nrow(concord_by_survey)
 
-fig6 <-
+fig6_concordance <-
   ggplot(concord, aes(x = prev_pct, y = tpr_pct)) +
   geom_mark_hull(
     aes(colour = zone, fill = zone),
@@ -262,4 +263,10 @@ fig6 <-
   theme_bw(base_size = 12) +
   theme(panel.grid.minor = element_blank())
 
-ggsave("output/figures/figure6_tpr_prevalence_concordance.png", fig6, width = 8, height = 6, dpi = 300)
+# Panel B drops its colour legend because panel A's zone legend covers both panels
+fig6 <-
+  (fig6_tpr + labs(tag = "A")) /
+  (fig6_concordance + guides(colour = "none") + labs(tag = "B")) +
+  plot_layout(heights = c(1, 1))
+
+ggsave("output/figures/figure6_tpr_prevalence_concordance.png", fig6, width = 10, height = 11, dpi = 300)

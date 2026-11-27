@@ -11,7 +11,7 @@ The scripts reproduce the tables, figures and in-text results of the manuscript 
 | `code/03_prevalence_sensitivity.R` | S2 Table, panels A to H (ratio of ORs versus survey 1, Awasi-only comparator, health-area random intercept, area-level permutation test, MDA+IRS compared with IRS, E-values, net-adjusted prevalence, Gengere as its own stratum), S11 Table (bed-net use) |
 | `code/04_mortality.R` | Table 2 (under-five and crude mortality), S2 Figure (crude mortality rates), S3 Table, panels A to F, S9 Table (household-reported cause of death) |
 | `code/05_entomology.R` | Table 3 (entomological indicators), Figure 5 (human biting rate by health area and quarterly sporozoite rate), S3 Figure (monthly entomological indicators), S5 Figure (2-month periods), S12 Table (cone bioassays after IRS round 2), S5 Table (Additional file 2), and the selection-weighted sporozoite rate and monthly-averaged EIR quoted in S1 Text |
-| `code/06_facility_surveillance.R` | Figure 6 (facility test positivity rate against survey prevalence), S1 Figure (monthly facility test positivity rate), S10 Table |
+| `code/06_facility_surveillance.R` | Figure 6 (monthly facility test positivity rate with survey prevalence, and facility test positivity rate against survey prevalence), S1 Figure (monthly facility malaria cases), S10 Table |
 
 `code/functions.R` holds helpers shared by the scripts. `code/prep.R` documents how the input files are built from the study team's internal data store; it cannot be run outside that store. `code/entomology_prep.R`, sourced by `prep.R`, holds the cleaning and audit steps applied to the entomology workbooks.
 
@@ -58,6 +58,8 @@ Data used in this study are subject to restrictions arising from participant inf
 
 ## Citation
 
-If you use this code, please cite the manuscript (citation details will be updated on publication) and the code itself:
+If you use this code, please cite the preprint (citation details will be updated on journal publication) and the code itself:
+
+Polonsky J, Maiga M, Desjardins A, Mbengue MAS, Nkemenang P, Meakin S, et al. Malaria prevalence after mass drug administration and indoor residual spraying in a conflict-affected setting, Democratic Republic of the Congo: a non-randomised repeated cross-sectional study, 2022–2024. medRxiv. 2026. https://doi.org/10.64898/2026.11.25.26368970
 
 Jonathan Polonsky. (2026). jpolonsky/malaria-angumu-2024 [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24021582
